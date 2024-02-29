@@ -43,6 +43,7 @@ import {
     calculateTotalLatency,
 } from '../../amazonqGumby/telemetry/codeTransformTelemetry'
 import { MetadataResult } from '../../shared/telemetry/telemetryClient'
+import { diff } from 'semver'
 
 const localize = nls.loadMessageBundle()
 export const stopTransformByQButton = localize('aws.codewhisperer.stop.transform.by.q', 'Stop')
@@ -90,11 +91,16 @@ async function showFileDiff() {
     // add icon to gutter and line higlight
     await setWarningIcon(8)
 
-    // add a line tooltip hover
-    await setTooltip(8)
+    // add a line tooltip hover with HTML support
+    await setWebViewRichTooltip(12)
 
+    // add diagnostic to line #
+    const collection = vscode.languages.createDiagnosticCollection('test')
+    await addDiagnosticOverview(collection, 15)
+    // try to split the diff view document with another view
+    // await splitDocumentAtLine(12)
     // add a webview to the columns
-    await attachColumnWebview()
+    // await attachColumnWebview()
 }
 
 async function customHighlightedLines(linesToHighlight: number[] = []) {
@@ -103,6 +109,7 @@ async function customHighlightedLines(linesToHighlight: number[] = []) {
     console.log('Inside customHighlightedLines')
 
     // Decoration type for highlights
+    // https://code.visualstudio.com/api/references/vscode-api#window.createTextEditorDecorationType
     const highlightDecorationType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 220, 0, 0.4)',
         isWholeLine: true,
@@ -124,6 +131,7 @@ async function setWarningIcon(lineNumber: number = 0) {
     // Get active diff editor
     const diffEditor = vscode.window.activeTextEditor
 
+    // https://code.visualstudio.com/api/references/vscode-api#window.createTextEditorDecorationType
     const highlightDecorationType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'green',
         border: '1px solid red',
@@ -133,7 +141,6 @@ async function setWarningIcon(lineNumber: number = 0) {
         gutterIconSize: '20',
         overviewRulerColor: new vscode.ThemeColor('warning'),
         overviewRulerLane: vscode.OverviewRulerLane.Right,
-
         after: {
             height: '20px',
             border: '1px solid purple',
@@ -142,11 +149,12 @@ async function setWarningIcon(lineNumber: number = 0) {
     })
 
     // Set the decorations
+    // https://code.visualstudio.com/api/references/vscode-api#DecorationOptions
     diffEditor?.setDecorations(highlightDecorationType, [
         {
             range: new vscode.Range(lineNumber - 1, 0, lineNumber - 1, 50),
             hoverMessage: `### This is my custom markdown tooltip header
-         On a custom icon line [See docs](https://docs.aws.amazon.com/amazonq/latest/aws-builder-use-ug/troubleshooting-code-transformation.html#w24aac14c20c19c11)
+         On a custom icon line ![See docs](https://docs.aws.amazon.com/amazonq/latest/aws-builder-use-ug/troubleshooting-code-transformation.html#w24aac14c20c19c11)
          - Item one
          - Item Two
         `,
@@ -154,59 +162,113 @@ async function setWarningIcon(lineNumber: number = 0) {
     ])
 }
 
-async function setTooltip(lineNumber: number = 0) {
-    // Register a hover provider
-    vscode.languages.registerHoverProvider('diff', {
-        provideHover(doc, pos) {
-            // Check if our desired position
-            if (doc.fileName === 'pom2.xml' && pos.line === lineNumber) {
-                return new vscode.Hover(`
-          ### My custom markdown tooltip text
-          
-          Is this working **bold** there?
-          `)
-            }
+async function splitDocumentAtLine(lineNumber: number = 0) {
+    const diffEditor = vscode.window.activeTextEditor
+    if (diffEditor) {
+        // Get the document
+        const document = diffEditor.document
 
-            return
-        },
-    })
+        // Create two new editors
+        const editor1 = await vscode.window.showTextDocument(document)
+        const editor2 = await vscode.window.showTextDocument(document)
+
+        // Arrange editors side by side
+        await vscode.window.activeTextEditor?.edit(editBuilder => {
+            editBuilder.replace(new vscode.Position(lineNumber - 1, 0), 'Test new contents')
+        })
+
+        await vscode.commands.executeCommand('vscode.setEditorLayout', {
+            orientation: 1, // 0 = side by side, 1 = stacked
+            groups: [
+                {
+                    editors: [editor1, editor2],
+                    size: 0.5, // Ratio between editors
+                },
+            ],
+        })
+    }
 }
 
-async function setWebViewTooltip(lineNumber: number = 0) {
+async function addDiagnosticOverview(collection: vscode.DiagnosticCollection, lineNumber: number = 0) {
+    // Get the diff editor
+    const documentUri = vscode.window.activeTextEditor?.document?.uri
+    collection.clear()
+    if (documentUri) {
+        collection.set(documentUri, [
+            {
+                code: '',
+                message: 'cannot assign twice to immutable variable `x`',
+                range: new vscode.Range(
+                    new vscode.Position(lineNumber - 1, 4),
+                    new vscode.Position(lineNumber - 1, 10)
+                ),
+                severity: vscode.DiagnosticSeverity.Information,
+                source: 'Test',
+                relatedInformation: [
+                    new vscode.DiagnosticRelatedInformation(
+                        new vscode.Location(
+                            documentUri,
+                            new vscode.Range(new vscode.Position(1, 8), new vscode.Position(1, 9))
+                        ),
+                        'first assignment to `x`'
+                    ),
+                ],
+            },
+        ])
+    }
+}
+
+async function setWebViewRichTooltip(lineNumber: number = 0) {
     // Get the diff editor
     const diffEditor = vscode.window.activeTextEditor
+    if (diffEditor) {
+        const viewColumn = diffEditor?.viewColumn || vscode.ViewColumn.Active
+        // Create a webview panel modal
+        const panel = vscode.window.createWebviewPanel(
+            'modalTooltip', // viewType
+            'Modal tooltip', // title
+            viewColumn, // show to the side of the editor
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+            }
+        )
 
-    // Create a webview panel modal
-    const panel = vscode.window.createWebviewPanel(
-        'modalTooltip', // viewType
-        'Modal tooltip', // title
-        vscode.ViewColumn.Beside, // show to the side of the editor
-        {
-            enableScripts: true,
-            retainContextWhenHidden: true,
-        }
-    )
+        // Add content to the panel modal
+        panel.webview.html = `
+            <h2>My Modal WebView Contents</h2>
+            <input type="number" placeholder="0 />
+            <button>Submit</button>
+        `
 
-    // Add content to the panel modal
-    panel.webview.html = `
-        <h1>My Modal WebView Contents</h2>
-    `
+        // https://code.visualstudio.com/api/references/vscode-api#window.createTextEditorDecorationType
+        const highlightDecorationType = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'green',
+            border: '1px solid red',
+            isWholeLine: true,
+            after: {
+                margin: '0 0 100px 0',
+                border: '1px solid blue',
+            },
+            before: {
+                contentText: 'test content',
+            },
+        })
 
-    // Get the range to attach modal to
-    const start = lineNumber - 1
-    const end = lineNumber
-    const range = new vscode.Range(start, 0, end, 0)
+        // Allowed HTML tags -> https://github.com/microsoft/vscode/blob/6d2920473c6f13759c978dd89104c4270a83422d/src/vs/base/browser/markdownRenderer.ts#L296
+        const markdownString = new vscode.MarkdownString()
+        markdownString.supportHtml = true
+        markdownString.appendMarkdown(panel.webview.html)
 
-    // Create a decoration
-    const decoration = {
-        range,
-        hoverMessage: panel, // our webview panel
+        // Set the decorations
+        // https://code.visualstudio.com/api/references/vscode-api#DecorationOptions
+        diffEditor?.setDecorations(highlightDecorationType, [
+            {
+                range: new vscode.Range(lineNumber - 1, 0, lineNumber - 1, 50),
+                hoverMessage: markdownString,
+            },
+        ])
     }
-
-    // Show decoration as modal
-    diffEditor?.setDecorations({
-        modals: [decoration],
-    })
 }
 
 async function attachColumnWebview() {
