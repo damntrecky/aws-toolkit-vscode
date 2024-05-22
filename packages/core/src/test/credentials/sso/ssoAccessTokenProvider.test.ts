@@ -7,7 +7,7 @@ import assert from 'assert'
 import * as FakeTimers from '@sinonjs/fake-timers'
 import * as sinon from 'sinon'
 import { SsoAccessTokenProvider } from '../../../auth/sso/ssoAccessTokenProvider'
-import { installFakeClock } from '../../testUtil'
+import { assertTelemetry, installFakeClock } from '../../testUtil'
 import { getCache } from '../../../auth/sso/cache'
 
 import { makeTemporaryToolkitFolder, tryRemoveFolder } from '../../../shared/filesystemUtilities'
@@ -54,6 +54,7 @@ describe('SsoAccessTokenProvider', function () {
             clientId: 'dummyClientId',
             clientSecret: 'dummyClientSecret',
             expiresAt: new clock.Date(clock.Date.now() + timeDelta),
+            startUrl,
             ...extras,
         }
     }
@@ -87,7 +88,7 @@ describe('SsoAccessTokenProvider', function () {
         oidcClient = stub(OidcClient)
         tempDir = await makeTemporaryTokenCacheFolder()
         cache = getCache(tempDir)
-        sut = new SsoAccessTokenProvider({ region, startUrl }, cache, oidcClient)
+        sut = SsoAccessTokenProvider.create({ region, startUrl }, cache, oidcClient, () => true)
     })
 
     afterEach(async function () {
@@ -100,11 +101,11 @@ describe('SsoAccessTokenProvider', function () {
         it('removes cached tokens and registrations', async function () {
             const validToken = createToken(hourInMs)
             await cache.token.save(startUrl, { region, startUrl, token: validToken })
-            await cache.registration.save({ region }, createRegistration(hourInMs))
+            await cache.registration.save({ startUrl, region }, createRegistration(hourInMs))
             await sut.invalidate()
 
             assert.strictEqual(await cache.token.load(startUrl), undefined)
-            assert.strictEqual(await cache.registration.load({ region }), undefined)
+            assert.strictEqual(await cache.registration.load({ startUrl, region }), undefined)
         })
     })
 
@@ -220,7 +221,12 @@ describe('SsoAccessTokenProvider', function () {
             assert.deepStrictEqual(await sut.createToken(), { ...token, identity: startUrl })
             const cachedToken = await cache.token.load(startUrl).then(a => a?.token)
             assert.deepStrictEqual(cachedToken, token)
-            assert.deepStrictEqual(await cache.registration.load({ region }), registration)
+            assert.deepStrictEqual(await cache.registration.load({ startUrl, region }), registration)
+            assertTelemetry('aws_loginWithBrowser', {
+                result: 'Succeeded',
+                isReAuth: undefined,
+                credentialStartUrl: startUrl,
+            })
         })
 
         it('always creates a new token, even if already cached', async function () {
@@ -258,20 +264,26 @@ describe('SsoAccessTokenProvider', function () {
             await clock.tickAsync(750)
             assert.ok(!progress.visible)
             await assert.rejects(resp, ToolkitError)
+            assertTelemetry('aws_loginWithBrowser', {
+                result: 'Failed',
+                isReAuth: undefined,
+                credentialStartUrl: startUrl,
+            })
         })
 
         /**
          * Saves an expired client registration to the cache.
          */
         async function saveExpiredRegistrationToCache(): Promise<{
-            key: { region: string; scopes: string[] }
+            key: { startUrl: string; region: string; scopes: string[] }
             registration: ClientRegistration
         }> {
-            const key = { region, scopes: [] }
+            const key = { startUrl, region, scopes: [] }
             const registration = {
                 clientId: 'myExpiredClientId',
                 clientSecret: 'myExpiredClientSecret',
                 expiresAt: new clock.Date(clock.Date.now() - 1), // expired date
+                startUrl: key.startUrl,
             }
             await cache.registration.save(key, registration)
             return { key, registration }
@@ -311,7 +323,7 @@ describe('SsoAccessTokenProvider', function () {
                 oidcClient.startDeviceAuthorization.rejects(exception)
 
                 await assert.rejects(sut.createToken(), exception)
-                assert.strictEqual(await cache.registration.load({ region }), undefined)
+                assert.strictEqual(await cache.registration.load({ startUrl, region }), undefined)
             })
 
             it('removes the client registration cache on client faults (token step)', async function () {
@@ -325,7 +337,12 @@ describe('SsoAccessTokenProvider', function () {
                 stubOpen()
 
                 await assert.rejects(sut.createToken(), exception)
-                assert.strictEqual(await cache.registration.load({ region }), undefined)
+                assert.strictEqual(await cache.registration.load({ startUrl, region }), undefined)
+                assertTelemetry('aws_loginWithBrowser', {
+                    result: 'Failed',
+                    isReAuth: undefined,
+                    credentialStartUrl: startUrl,
+                })
             })
 
             it('preserves the client registration cache on server faults', async function () {
@@ -336,7 +353,7 @@ describe('SsoAccessTokenProvider', function () {
                 oidcClient.startDeviceAuthorization.rejects(exception)
 
                 await assert.rejects(sut.createToken(), exception)
-                assert.deepStrictEqual(await cache.registration.load({ region }), registration)
+                assert.deepStrictEqual(await cache.registration.load({ startUrl, region }), registration)
             })
         })
 
@@ -350,14 +367,19 @@ describe('SsoAccessTokenProvider', function () {
             it('stops the flow if user does not click the link', async function () {
                 stubOpen(false)
                 await assert.rejects(sut.createToken(), ToolkitError)
+                assertTelemetry('aws_loginWithBrowser', {
+                    result: 'Cancelled',
+                    isReAuth: undefined,
+                    credentialStartUrl: startUrl,
+                })
             })
 
             it('saves the client registration even when cancelled', async function () {
                 stubOpen(false)
                 const registration = createRegistration(hourInMs)
-                await cache.registration.save({ region }, registration)
+                await cache.registration.save({ startUrl, region }, registration)
                 await assert.rejects(sut.createToken(), ToolkitError)
-                const cached = await cache.registration.load({ region })
+                const cached = await cache.registration.load({ startUrl, region })
                 assert.deepStrictEqual(cached, registration)
             })
 

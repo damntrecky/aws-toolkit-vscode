@@ -8,7 +8,7 @@ import * as sinon from 'sinon'
 import { ToolkitError, isUserCancelledError } from '../../shared/errors'
 import { assertTreeItem } from '../shared/treeview/testUtil'
 import { getTestWindow } from '../shared/vscode/window'
-import { captureEventOnce } from '../testUtil'
+import { assertTelemetry, captureEventOnce, getMetrics } from '../testUtil'
 import { createBuilderIdProfile, createSsoProfile, createTestAuth } from './testUtil'
 import { toCollection } from '../../shared/utilities/asyncCollection'
 import globals from '../../shared/extensionGlobals'
@@ -154,11 +154,12 @@ describe('Auth', function () {
             assert.deepStrictEqual(updated.scopes, updatedProfile.scopes)
         })
 
-        it('invalidates the connection', async function () {
+        it('does not change the connection state', async function () {
             const conn = await auth.createConnection(ssoProfile)
+            const originalState = auth.getConnectionState(conn)
             const updated = await auth.updateConnection(conn, updatedProfile)
 
-            assert.strictEqual(auth.getConnectionState(updated), 'invalid')
+            assert.strictEqual(auth.getConnectionState(updated), originalState)
         })
 
         it('fires an event when updating', async function () {
@@ -239,6 +240,30 @@ describe('Auth', function () {
             assert.ok(actual instanceof ToolkitError)
             assert.strictEqual(actual.cause, expected)
             assert.strictEqual(auth.getConnectionState(conn), 'valid')
+        })
+
+        it('connection is not invalidated when networking issue during connection refresh', async function () {
+            const networkError = new ToolkitError('test', { code: 'ETIMEDOUT' })
+            const expectedError = new ToolkitError('Failed to update connection due to networking issues', {
+                cause: networkError,
+            })
+            const conn = await auth.createConnection(ssoProfile)
+            auth.getTestTokenProvider(conn)?.getToken.rejects(networkError)
+            const actual = await auth.refreshConnectionState(conn).catch(e => e)
+            assert.ok(actual instanceof ToolkitError)
+            assert.deepStrictEqual(actual, expectedError)
+            assert.strictEqual(auth.getConnectionState(conn), 'valid')
+        })
+
+        it('reauthentication is indicated in metric', async function () {
+            const conn = await auth.createInvalidSsoConnection(ssoProfile)
+            await auth.reauthenticate(conn)
+            assertTelemetry('aws_loginWithBrowser', {
+                result: 'Succeeded',
+                isReAuth: true,
+                credentialStartUrl: ssoProfile.startUrl,
+            })
+            assert.strictEqual(getMetrics('aws_loginWithBrowser').length, 1)
         })
     })
 
@@ -428,11 +453,6 @@ describe('Auth', function () {
     })
 
     describe('AuthNode', function () {
-        it('shows a message to create a connection if no connections exist', async function () {
-            const node = new AuthNode(auth)
-            await assertTreeItem(node, { label: 'Connect to AWS to Get Started...' })
-        })
-
         it('shows a login message if not connected', async function () {
             await auth.createConnection(ssoProfile)
             const node = new AuthNode(auth)

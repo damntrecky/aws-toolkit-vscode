@@ -6,7 +6,11 @@
 import * as vscode from 'vscode'
 import assert from 'assert'
 import * as sinon from 'sinon'
-import { CodeWhispererStatusBar, InlineCompletionService } from '../../../codewhisperer/service/inlineCompletionService'
+import {
+    CodeWhispererStatusBar,
+    InlineCompletionService,
+    refreshStatusBar,
+} from '../../../codewhisperer/service/inlineCompletionService'
 import { createMockTextEditor, resetCodeWhispererGlobalVariables, createMockDocument } from '../testUtil'
 import { ReferenceInlineProvider } from '../../../codewhisperer/service/referenceInlineProvider'
 import { RecommendationHandler } from '../../../codewhisperer/service/recommendationHandler'
@@ -15,7 +19,8 @@ import { CodeSuggestionsState, ConfigurationEntry } from '../../../codewhisperer
 import { CWInlineCompletionItemProvider } from '../../../codewhisperer/service/inlineCompletionItemProvider'
 import { session } from '../../../codewhisperer/util/codeWhispererSession'
 import { AuthUtil } from '../../../codewhisperer/util/authUtil'
-import { listCodeWhispererCommandsId } from '../../../codewhisperer/commands/statusBarCommands'
+import { listCodeWhispererCommandsId } from '../../../codewhisperer/ui/statusBarMenu'
+import { tryRegister } from '../../testUtil'
 
 describe('inlineCompletionService', function () {
     beforeEach(async function () {
@@ -42,6 +47,8 @@ describe('inlineCompletionService', function () {
         })
 
         it('should call checkAndResetCancellationTokens before showing inline and next token to be null', async function () {
+            tryRegister(refreshStatusBar)
+
             const mockEditor = createMockTextEditor()
             sinon.stub(RecommendationHandler.instance, 'getRecommendations').resolves({
                 result: 'Succeeded',
@@ -160,6 +167,8 @@ describe('CWInlineCompletionProvider', function () {
         })
 
         it('should return undefined if position is before RecommendationHandler start pos', async function () {
+            tryRegister(refreshStatusBar)
+
             const position = new vscode.Position(0, 0)
             const document = createMockDocument()
             const fakeContext = { triggerKind: 0, selectedCompletionInfo: undefined }
@@ -187,6 +196,10 @@ describe('codewhisperer status bar', function () {
         }
     }
 
+    before(async function () {
+        tryRegister(refreshStatusBar)
+    })
+
     beforeEach(async function () {
         await resetCodeWhispererGlobalVariables()
         sandbox = sinon.createSandbox()
@@ -205,9 +218,9 @@ describe('codewhisperer status bar', function () {
         await service.refreshStatusBar()
 
         const actualStatusBar = statusBar.getStatusBar()
-        assert.strictEqual(actualStatusBar.text, '$(chrome-close) CodeWhisperer')
+        assert.strictEqual(actualStatusBar.text, '$(chrome-close) Amazon Q')
         assert.strictEqual(actualStatusBar.command, listCodeWhispererCommandsId)
-        assert.deepStrictEqual(actualStatusBar.backgroundColor, undefined)
+        assert.deepStrictEqual(actualStatusBar.backgroundColor, new vscode.ThemeColor('statusBarItem.errorBackground'))
     })
 
     it('shows correct status bar when auth is connected', async function () {
@@ -217,7 +230,7 @@ describe('codewhisperer status bar', function () {
         await service.refreshStatusBar()
 
         const actualStatusBar = statusBar.getStatusBar()
-        assert.strictEqual(actualStatusBar.text, '$(debug-start) CodeWhisperer')
+        assert.strictEqual(actualStatusBar.text, '$(debug-start) Amazon Q')
         assert.strictEqual(actualStatusBar.command, listCodeWhispererCommandsId)
         assert.deepStrictEqual(actualStatusBar.backgroundColor, undefined)
     })
@@ -229,7 +242,7 @@ describe('codewhisperer status bar', function () {
         await service.refreshStatusBar()
 
         const actualStatusBar = statusBar.getStatusBar()
-        assert.strictEqual(actualStatusBar.text, '$(debug-pause) CodeWhisperer')
+        assert.strictEqual(actualStatusBar.text, '$(debug-pause) Amazon Q')
         assert.strictEqual(actualStatusBar.command, listCodeWhispererCommandsId)
         assert.deepStrictEqual(actualStatusBar.backgroundColor, undefined)
     })
@@ -241,7 +254,7 @@ describe('codewhisperer status bar', function () {
         await service.refreshStatusBar()
 
         const actualStatusBar = statusBar.getStatusBar()
-        assert.strictEqual(actualStatusBar.text, '$(debug-disconnect) CodeWhisperer')
+        assert.strictEqual(actualStatusBar.text, '$(debug-disconnect) Amazon Q')
         assert.strictEqual(actualStatusBar.command, listCodeWhispererCommandsId)
         assert.deepStrictEqual(
             actualStatusBar.backgroundColor,

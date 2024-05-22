@@ -26,6 +26,11 @@ export const dontShow = localize('aws.generic.doNotShowAgain', "Don't Show Again
 export const loadMore = localize('AWS.generic.loadMore', 'Load More')
 export const learnMore = localize('AWS.generic.learnMore', 'Learn More')
 export const proceed = localize('AWS.generic.proceed', 'Proceed')
+export const connect = localize('AWS.auth.connect', 'Connect with AWS')
+export const reauthenticate = localize('AWS.auth.reauthenticate', 'Re-authenticate')
+export function connectionExpired(name: string) {
+    return localize('AWS.auth.expired', `Your ${name} connection has expired. Please re-authenticate.`)
+}
 
 export const checklogs = () =>
     localize(

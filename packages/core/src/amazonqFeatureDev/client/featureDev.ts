@@ -13,7 +13,14 @@ import * as FeatureDevProxyClient from './featuredevproxyclient'
 import apiConfig = require('./codewhispererruntime-2022-11-11.json')
 import { featureName } from '../constants'
 import { CodeReference } from '../../amazonq/webview/ui/connector'
-import { ApiError, ContentLengthError, UnknownApiError } from '../errors'
+import {
+    ApiError,
+    CodeIterationLimitError,
+    ContentLengthError,
+    MonthlyConversationLimitError,
+    PlanIterationLimitError,
+    UnknownApiError,
+} from '../errors'
 import { ToolkitError, isAwsError, isCodeWhispererStreamingServiceException } from '../../shared/errors'
 import { getCodewhispererConfig } from '../../codewhisperer/client/codewhisperer'
 import { LLMResponseType } from '../types'
@@ -72,6 +79,9 @@ export class FeatureDevClient {
                 getLogger().error(
                     `${featureName}: failed to start conversation: ${e.message} RequestId: ${e.requestId}`
                 )
+                if (e.code === 'ServiceQuotaExceededException') {
+                    throw new MonthlyConversationLimitError(e.message)
+                }
                 throw new ApiError(e.message, 'CreateConversation', e.code, e.statusCode ?? 400)
             }
 
@@ -168,6 +178,13 @@ export class FeatureDevClient {
                         e.$metadata.requestId ?? 'unknown'
                     }`
                 )
+                if (
+                    (e.name === 'ThrottlingException' &&
+                        e.message.includes('limit for number of iterations on an implementation plan')) ||
+                    e.name === 'ServiceQuotaExceededException'
+                ) {
+                    throw new PlanIterationLimitError()
+                }
                 throw new ApiError(
                     e.message,
                     'GeneratePlan',
@@ -206,6 +223,14 @@ export class FeatureDevClient {
                     (e as any).requestId
                 }`
             )
+            if (
+                isAwsError(e) &&
+                ((e.code === 'ThrottlingException' &&
+                    e.message.includes('limit for number of iterations on a code generation')) ||
+                    e.code === 'ServiceQuotaExceededException')
+            ) {
+                throw new CodeIterationLimitError()
+            }
             throw new ToolkitError((e as Error).message, { code: 'StartCodeGenerationFailed' })
         }
     }

@@ -235,7 +235,7 @@ export class DefaultCodeWhispererClient {
         return pageableToCollection(requester, {}, 'nextToken')
             .promise()
             .then(resps => {
-                let logStr = 'CodeWhisperer: listAvailableCustomizations API request:'
+                let logStr = 'amazonq: listAvailableCustomizations API request:'
                 resps.forEach(resp => {
                     const requestId = resp.$response.requestId
                     logStr += `\n${indent('RequestID: ', 4)}${requestId},\n${indent('Customizations:', 4)}`
@@ -256,7 +256,7 @@ export class DefaultCodeWhispererClient {
             userContext: {
                 ideCategory: 'VSCODE',
                 operatingSystem: this.getOperatingSystem(),
-                product: 'CodeWhisperer',
+                product: 'CodeWhisperer', // TODO: update this?
                 clientId: await getClientId(globals.context.globalState),
                 ideVersion: extensionVersion,
             },
@@ -273,7 +273,7 @@ export class DefaultCodeWhispererClient {
             userContext: {
                 ideCategory: 'VSCODE',
                 operatingSystem: this.getOperatingSystem(),
-                product: 'CodeWhisperer',
+                product: 'CodeWhisperer', // TODO: update this?
                 clientId: await getClientId(globals.context.globalState),
                 ideVersion: extensionVersion,
             },
@@ -326,9 +326,21 @@ export class DefaultCodeWhispererClient {
     }
 
     /**
+     * @description After the job has been PAUSED we need to get user intervention. Once that user
+     * intervention has been handled we can resume the transformation job.
+     * @params transformationJobId - String id returned from StartCodeTransformationResponse
+     * @params userActionStatus - String to determine what action the user took, if any.
+     */
+    public async codeModernizerResumeTransformation(
+        request: CodeWhispererUserClient.ResumeTransformationRequest
+    ): Promise<PromiseResult<CodeWhispererUserClient.ResumeTransformationResponse, AWSError>> {
+        return (await this.createUserSdkClient()).resumeTransformation(request).promise()
+    }
+
+    /**
      * @description After starting a transformation use this function to display the LLM
      * transformation plan to the user.
-     * @params tranformationJobId - String id returned from StartCodeTransformationResponse
+     * @params transformationJobId - String id returned from StartCodeTransformationResponse
      */
     public async codeModernizerGetCodeTransformationPlan(
         request: CodeWhispererUserClient.GetTransformationPlanRequest

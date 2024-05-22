@@ -88,9 +88,14 @@ export class Session {
         )
     }
 
+    updateWorkspaceRoot(workspaceRootFolder: string) {
+        this.config.workspaceRoots = [workspaceRootFolder]
+        this._state && this._state.updateWorkspaceRoot && this._state.updateWorkspaceRoot(workspaceRootFolder)
+    }
+
     private getSessionStateConfig(): Omit<SessionStateConfig, 'uploadId'> {
         return {
-            sourceRoots: this.config.sourceRoots,
+            workspaceRoots: this.config.workspaceRoots,
             workspaceFolders: this.config.workspaceFolders,
             proxyClient: this.proxyClient,
             conversationId: this.conversationId,
@@ -166,7 +171,7 @@ export class Session {
     }
 
     public async insertChanges() {
-        for (const filePath of this.state.filePaths ?? []) {
+        for (const filePath of this.state.filePaths?.filter(i => !i.rejected) ?? []) {
             const absolutePath = path.join(filePath.workspaceFolder.uri.fsPath, filePath.relativePath)
 
             const uri = filePath.virtualMemoryUri
@@ -226,6 +231,11 @@ export class Session {
         if (!this._conversationId) {
             throw new ConversationIdNotFoundError()
         }
+        return this._conversationId
+    }
+
+    // Used for cases where it is not needed to have conversationId
+    get conversationIdUnsafe() {
         return this._conversationId
     }
 

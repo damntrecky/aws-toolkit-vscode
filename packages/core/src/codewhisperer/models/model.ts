@@ -6,6 +6,7 @@ import * as vscode from 'vscode'
 import { ToolkitError } from '../../shared/errors'
 import { getIcon } from '../../shared/icons'
 import {
+    CodewhispererCodeScanScope,
     CodewhispererCompletionType,
     CodewhispererLanguage,
     CodewhispererTriggerType,
@@ -13,8 +14,10 @@ import {
 } from '../../shared/telemetry/telemetry'
 import { References } from '../client/codewhisperer'
 import globals from '../../shared/extensionGlobals'
-import { autoTriggerEnabledKey } from './constants'
+import { autoScansEnabledKey, autoTriggerEnabledKey } from './constants'
 import { get, set } from '../util/commonUtil'
+import { ChatControllerEventEmitters } from '../../amazonqGumby/chat/controller/controller'
+import { TransformationSteps } from '../client/codewhispereruserclient'
 
 // unavoidable global variables
 interface VsCodeState {
@@ -31,12 +34,15 @@ interface VsCodeState {
      * Timestamp of previous user edit
      */
     lastUserModificationTime: number
+
+    isFreeTierLimitReached: boolean
 }
 
 export const vsCodeState: VsCodeState = {
     isIntelliSenseActive: false,
     isCodeWhispererEditing: false,
     lastUserModificationTime: 0,
+    isFreeTierLimitReached: false,
 }
 
 export type UtgStrategy = 'ByName' | 'ByContent'
@@ -103,6 +109,63 @@ export class CodeSuggestionsState {
     isSuggestionsEnabled(): boolean {
         const isEnabled = get(autoTriggerEnabledKey, this.#context)
         return isEnabled !== undefined ? isEnabled : this.#fallback
+    }
+}
+
+export class CodeScansState {
+    #context: vscode.Memento
+    /** The initial state if scan state was not defined */
+    #fallback: boolean
+    #onDidChangeState = new vscode.EventEmitter<boolean>()
+    /** Set a callback for when state of code scans changes */
+    onDidChangeState = this.#onDidChangeState.event
+
+    private exceedsMonthlyQuota = false
+    private latestScanTime: number | undefined = undefined
+
+    static #instance: CodeScansState
+    static get instance() {
+        return (this.#instance ??= new this())
+    }
+
+    protected constructor(context: vscode.Memento = globals.context.globalState, fallback: boolean = true) {
+        this.#context = context
+        this.#fallback = fallback
+    }
+
+    async toggleScans() {
+        const autoScansEnabled = this.isScansEnabled()
+        const toSet: boolean = !autoScansEnabled
+        await set(autoScansEnabledKey, toSet, this.#context)
+        this.#onDidChangeState.fire(toSet)
+        return toSet
+    }
+
+    async setScansEnabled(isEnabled: boolean) {
+        if (this.isScansEnabled() !== isEnabled) {
+            await this.toggleScans()
+        }
+    }
+
+    isScansEnabled(): boolean {
+        const isEnabled = get(autoScansEnabledKey, this.#context)
+        return isEnabled !== undefined ? isEnabled : this.#fallback
+    }
+
+    setMonthlyQuotaExceeded() {
+        this.exceedsMonthlyQuota = true
+    }
+
+    isMonthlyQuotaExceeded() {
+        return this.exceedsMonthlyQuota
+    }
+
+    setLatestScanTime(time: number) {
+        this.latestScanTime = time
+    }
+
+    getLatestScanTime() {
+        return this.latestScanTime
     }
 }
 
@@ -197,7 +260,7 @@ export class CodeScanState {
     public getIconForButton() {
         switch (this.codeScanState) {
             case CodeScanStatus.NotStarted:
-                return getIcon('vscode-debug-alt-small')
+                return getIcon('vscode-debug-all')
             case CodeScanStatus.Running:
                 return getIcon('vscode-stop-circle')
             case CodeScanStatus.Cancelling:
@@ -215,9 +278,10 @@ export class CodeScanStoppedError extends ToolkitError {
 }
 
 // for internal use; store status of job
-enum TransformByQStatus {
+export enum TransformByQStatus {
     NotStarted = 'Not Started',
     Running = 'Running', // includes creating job, uploading code, analyzing, testing, transforming, etc.
+    WaitingUserInput = 'WaitingForUserInput', // The human in the loop, this period is waiting for user input to continue
     Cancelled = 'Cancelled', // if user manually cancels
     Failed = 'Failed', // if job is rejected or if any other error experienced; user will receive specific error message
     Succeeded = 'Succeeded',
@@ -255,6 +319,29 @@ export class ZipManifest {
     dependenciesRoot: string | undefined = 'dependencies/'
     buildLogs: string = 'build-logs.txt'
     version: string = '1.0'
+    hilCapabilities: string[] = ['HIL_1pDependency_VersionUpgrade']
+    transformCapabilities: string[] = ['EXPLAINABILITY_V1']
+}
+
+export interface IHilZipManifestParams {
+    pomGroupId: string
+    pomArtifactId: string
+    targetPomVersion: string
+    dependenciesRoot?: string
+}
+export class HilZipManifest {
+    hilCapability: string = 'HIL_1pDependency_VersionUpgrade'
+    hilInput: IHilZipManifestParams = {
+        pomGroupId: '',
+        pomArtifactId: '',
+        targetPomVersion: '',
+        dependenciesRoot: 'dependencies/',
+    }
+    constructor({ pomGroupId, pomArtifactId, targetPomVersion }: IHilZipManifestParams) {
+        this.hilInput.pomGroupId = pomGroupId
+        this.hilInput.pomArtifactId = pomArtifactId
+        this.hilInput.targetPomVersion = targetPomVersion
+    }
 }
 
 export enum DropdownStep {
@@ -262,11 +349,29 @@ export enum DropdownStep {
     STEP_2 = 2,
 }
 
+export const jobPlanProgress: {
+    startJob: StepProgress
+    buildCode: StepProgress
+    generatePlan: StepProgress
+    transformCode: StepProgress
+} = {
+    startJob: StepProgress.NotStarted,
+    buildCode: StepProgress.NotStarted,
+    generatePlan: StepProgress.NotStarted,
+    transformCode: StepProgress.NotStarted,
+}
+
+export let sessionJobHistory: {
+    [jobId: string]: { startTime: string; projectName: string; status: string; duration: string }
+} = {}
+
 export class TransformByQState {
     private transformByQState: TransformByQStatus = TransformByQStatus.NotStarted
 
     private projectName: string = ''
     private projectPath: string = ''
+
+    private startTime: string = ''
 
     private jobId: string = ''
 
@@ -286,13 +391,23 @@ export class TransformByQState {
 
     private payloadFilePath: string = ''
 
-    private jobFailureErrorMessage: string = ''
+    private jobFailureErrorNotification: string | undefined = undefined
+
+    private jobFailureErrorChatMessage: string | undefined = undefined
 
     private errorLog: string = ''
 
     private mavenName: string = ''
 
     private javaHome: string | undefined = undefined
+
+    private chatControllers: ChatControllerEventEmitters | undefined = undefined
+
+    private dependencyFolderInfo: FolderInfo | undefined = undefined
+
+    private planSteps: TransformationSteps | undefined = undefined
+
+    private intervalId: NodeJS.Timeout | undefined = undefined
 
     public isNotStarted() {
         return this.transformByQState === TransformByQStatus.NotStarted
@@ -324,6 +439,10 @@ export class TransformByQState {
 
     public getProjectPath() {
         return this.projectPath
+    }
+
+    public getStartTime() {
+        return this.startTime
     }
 
     public getJobId() {
@@ -370,8 +489,12 @@ export class TransformByQState {
         return this.payloadFilePath
     }
 
-    public getJobFailureErrorMessage() {
-        return this.jobFailureErrorMessage
+    public getJobFailureErrorNotification() {
+        return this.jobFailureErrorNotification
+    }
+
+    public getJobFailureErrorChatMessage() {
+        return this.jobFailureErrorChatMessage
     }
 
     public getErrorLog() {
@@ -384,6 +507,22 @@ export class TransformByQState {
 
     public getJavaHome() {
         return this.javaHome
+    }
+
+    public getChatControllers() {
+        return this.chatControllers
+    }
+
+    public getDependencyFolderInfo(): FolderInfo | undefined {
+        return this.dependencyFolderInfo
+    }
+
+    public getPlanSteps() {
+        return this.planSteps
+    }
+
+    public getIntervalId() {
+        return this.intervalId
     }
 
     public appendToErrorLog(message: string) {
@@ -420,6 +559,10 @@ export class TransformByQState {
 
     public setProjectPath(path: string) {
         this.projectPath = path
+    }
+
+    public setStartTime(time: string) {
+        this.startTime = time
     }
 
     public setJobId(id: string) {
@@ -462,8 +605,12 @@ export class TransformByQState {
         this.payloadFilePath = payloadFilePath
     }
 
-    public setJobFailureErrorMessage(errorMessage: string) {
-        this.jobFailureErrorMessage = errorMessage
+    public setJobFailureErrorNotification(errorNotification: string) {
+        this.jobFailureErrorNotification = errorNotification
+    }
+
+    public setJobFailureErrorChatMessage(errorChatMessage: string) {
+        this.jobFailureErrorChatMessage = errorChatMessage
     }
 
     public setMavenName(mavenName: string) {
@@ -474,32 +621,38 @@ export class TransformByQState {
         this.javaHome = javaHome
     }
 
-    public getPrefixTextForButton() {
-        switch (this.transformByQState) {
-            case TransformByQStatus.NotStarted:
-                return 'Run'
-            case TransformByQStatus.Cancelled:
-                return 'Stopping'
-            default:
-                return 'Stop'
-        }
+    public setChatControllers(controllers: ChatControllerEventEmitters) {
+        this.chatControllers = controllers
     }
 
-    public getIconForButton() {
-        switch (this.transformByQState) {
-            case TransformByQStatus.NotStarted:
-                return getIcon('vscode-play')
-            default:
-                return getIcon('vscode-stop-circle')
-        }
+    public setDependencyFolderInfo(folderInfo: FolderInfo) {
+        this.dependencyFolderInfo = folderInfo
+    }
+
+    public setIntervalId(id: NodeJS.Timeout | undefined) {
+        this.intervalId = id
+    }
+
+    public setPlanSteps(steps: TransformationSteps) {
+        this.planSteps = steps
+    }
+
+    public resetPlanSteps() {
+        this.planSteps = undefined
+    }
+
+    public resetSessionJobHistory() {
+        sessionJobHistory = {}
     }
 
     public setJobDefaults() {
-        this.setToNotStarted() // so that the "Transform by Q" button resets
-        this.polledJobStatus = '' // reset polled job status too
-        this.jobFailureErrorMessage = ''
+        this.setToNotStarted()
+        this.jobFailureErrorNotification = undefined
+        this.jobFailureErrorChatMessage = undefined
+        this.jobFailureMetadata = ''
         this.payloadFilePath = ''
         this.errorLog = ''
+        this.intervalId = undefined
     }
 }
 
@@ -529,6 +682,7 @@ export interface CodeScanTelemetryEntry {
     codewhispererCodeScanTotalIssues: number
     codewhispererCodeScanIssuesWithFixes: number
     credentialStartUrl: string | undefined
+    codewhispererCodeScanScope: CodewhispererCodeScanScope
 }
 
 export interface RecommendationDescription {
@@ -606,4 +760,15 @@ export enum Cloud9AccessState {
     NoAccess,
     RequestedAccess,
     HasAccess,
+}
+
+export interface TransformationCandidateProject {
+    name: string
+    path: string
+    JDKVersion?: JDKVersion
+}
+
+export interface FolderInfo {
+    path: string
+    name: string
 }

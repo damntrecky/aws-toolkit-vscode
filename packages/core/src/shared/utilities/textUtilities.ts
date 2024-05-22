@@ -166,6 +166,31 @@ export function toTitleCase(str: string): string {
 }
 
 /**
+ * converts keys in an object from camelCase to snake_case
+ * e.g.
+ * {
+ *   fooBar: "fi"
+ * }
+ *
+ * to
+ * {
+ *   foo_bar: "fi"
+ * }
+ */
+export function toSnakeCase(obj: Record<string, any>) {
+    const snakeObj: Record<string, string> = {}
+
+    for (const key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+            const snakeKey = key.replace(/([a-z])([A-Z]+)/g, '$1_$2').toLowerCase()
+            snakeObj[snakeKey] = obj[key]
+        }
+    }
+
+    return snakeObj
+}
+
+/**
  * Gets a relative date between the from date and now date (default: current time)
  * e.g. "in 1 minute", '1 minute ago'
  * works on the scales of seconds, minutes, hours, days, weeks, months, years
@@ -309,4 +334,31 @@ export function sanitizeFilename(input: string, replaceString = '_'): string {
                 replaceString
             )
     )
+}
+
+// Given number of milliseconds elapsed (ex. 4,500,000) return hr / min / sec it represents (ex. "1 hr 15 min")
+export function convertToTimeString(durationInMs: number) {
+    const time = new Date(durationInMs)
+    const hours = time.getUTCHours()
+    const minutes = time.getUTCMinutes()
+    const seconds = time.getUTCSeconds()
+    let timeString = `${seconds} sec`
+    if (minutes > 0) {
+        timeString = `${minutes} min ${timeString}`
+    }
+    if (hours > 0) {
+        timeString = `${hours} hr ${timeString}`
+    }
+    return timeString
+}
+
+// Given Date object, return timestamp it represents (ex. "01/01/23, 12:00 AM")
+export function convertDateToTimestamp(date: Date) {
+    return date.toLocaleDateString('en-US', {
+        month: '2-digit',
+        day: '2-digit',
+        year: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+    })
 }

@@ -16,23 +16,23 @@ import * as codecatalyst from './model'
 import { getLogger } from '../shared/logger'
 import { Connection } from '../auth/connection'
 import { openUrl } from '../shared/utilities/vsCodeUtils'
-import { showManageConnections } from '../auth/ui/vue/show'
+import { getShowManageConnections } from '../login/command'
 
-const learnMoreCommand = Commands.register('aws.learnMore', async (docsUrl: vscode.Uri) => {
+export const learnMoreCommand = Commands.declare('aws.learnMore', () => async (docsUrl: vscode.Uri) => {
     return openUrl(docsUrl)
 })
 
 // Only used in rare cases on C9
-const reauth = Commands.register(
+export const reauth = Commands.declare(
     '_aws.codecatalyst.reauthenticate',
-    async (conn: Connection, authProvider: CodeCatalystAuthenticationProvider) => {
+    () => async (conn: Connection, authProvider: CodeCatalystAuthenticationProvider) => {
         await authProvider.auth.reauthenticate(conn)
     }
 )
 
-const onboardCommand = Commands.register(
+export const onboardCommand = Commands.declare(
     '_aws.codecatalyst.onboard',
-    async (authProvider: CodeCatalystAuthenticationProvider) => {
+    () => async (authProvider: CodeCatalystAuthenticationProvider) => {
         void authProvider.promptOnboarding()
     }
 )
@@ -44,12 +44,25 @@ async function getLocalCommands(auth: CodeCatalystAuthenticationProvider) {
         iconPath: getIcon('vscode-question'),
     })
 
-    if (!auth.activeConnection || !auth.isConnectionValid()) {
+    // There is a connection, but it is expired, or CodeCatalyst scopes are expired.
+    if (auth.activeConnection && !auth.isConnectionValid()) {
         return [
-            showManageConnections.build(placeholder, 'codecatalystDeveloperTools', 'codecatalyst').asTreeNode({
-                label: 'Sign in to get started',
-                iconPath: getIcon('vscode-account'),
+            reauth.build(auth.activeConnection, auth).asTreeNode({
+                label: 'Re-authenticate to connect',
+                iconPath: addColor(getIcon('vscode-debug-disconnect'), 'notificationsErrorIcon.foreground'),
             }),
+            learnMoreNode,
+        ]
+    }
+
+    if (!auth.activeConnection) {
+        return [
+            getShowManageConnections()
+                .build(placeholder, 'codecatalystDeveloperTools', 'codecatalyst')
+                .asTreeNode({
+                    label: 'Sign in to get started',
+                    iconPath: getIcon('vscode-account'),
+                }),
             learnMoreNode,
         ]
     }
@@ -129,10 +142,9 @@ export class CodeCatalystRootNode implements TreeNode {
 
     public constructor(private readonly authProvider: CodeCatalystAuthenticationProvider) {
         this.addRefreshEmitter(() => this.onDidChangeEmitter.fire())
-        this.authProvider.onDidChangeActiveConnection(() => {
-            for (const fire of this.refreshEmitters) {
-                fire()
-            }
+
+        this.authProvider.onDidChange(() => {
+            this.refreshEmitters.forEach(fire => fire())
         })
     }
 

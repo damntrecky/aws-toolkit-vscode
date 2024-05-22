@@ -5,6 +5,7 @@
 
 import { ToolkitError } from '../shared/errors'
 import { featureName } from './constants'
+import { uploadCodeError } from './userFacingText'
 
 export class ConversationIdNotFoundError extends ToolkitError {
     constructor() {
@@ -26,9 +27,12 @@ export class PanelLoadError extends ToolkitError {
 
 export class WorkspaceFolderNotFoundError extends ToolkitError {
     constructor() {
-        super(`Workspace folder was not found. Open a workspace to continue using ${featureName}`, {
-            code: 'WorkspaceFolderNotFound',
-        })
+        super(
+            `I couldn't find a workspace folder. Open a workspace, and then open a new chat tab and enter /dev to start discussing your code task with me.`,
+            {
+                code: 'WorkspaceFolderNotFound',
+            }
+        )
     }
 }
 
@@ -57,7 +61,7 @@ export class PrepareRepoFailedError extends ToolkitError {
 
 export class UploadCodeError extends ToolkitError {
     constructor(statusCode: string) {
-        super('Unable to upload code', { code: `UploadCode-${statusCode}` })
+        super(uploadCodeError, { code: `UploadCode-${statusCode}` })
     }
 }
 
@@ -73,6 +77,30 @@ export class ContentLengthError extends ToolkitError {
             'The project you have selected for source code is too large to use as context. Please select a different folder to use for this conversation',
             { code: 'ContentLengthError' }
         )
+    }
+}
+
+export class PlanIterationLimitError extends ToolkitError {
+    constructor() {
+        super(
+            'You have reached the free tier limit for number of iterations on an implementation plan. Please proceed to generating code or start to discuss a new plan.',
+            { code: 'PlanIterationLimitError' }
+        )
+    }
+}
+
+export class CodeIterationLimitError extends ToolkitError {
+    constructor() {
+        super(
+            'You have reached the free tier limit for number of iterations on a code generation. Please proceed to accept the code or start a new conversation.',
+            { code: 'CodeIterationLimitError' }
+        )
+    }
+}
+
+export class MonthlyConversationLimitError extends ToolkitError {
+    constructor(message: string) {
+        super(message, { code: 'MonthlyConversationLimitError' })
     }
 }
 

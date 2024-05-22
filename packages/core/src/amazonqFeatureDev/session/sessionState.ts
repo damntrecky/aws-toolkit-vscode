@@ -4,7 +4,6 @@
  */
 
 import { MynahIcons } from '@aws/mynah-ui'
-import { randomUUID } from 'crypto'
 import * as path from 'path'
 import * as vscode from 'vscode'
 import { ToolkitError } from '../../shared/errors'
@@ -27,13 +26,15 @@ import {
     SessionStateInteraction,
     SessionStatePhase,
 } from '../types'
-import { collectFiles, getWorkspaceFoldersByPrefixes, prepareRepoData } from '../util/files'
+import { prepareRepoData } from '../util/files'
 import { TelemetryHelper } from '../util/telemetryHelper'
 import { uploadCode } from '../util/upload'
 import { CodeReference } from '../../amazonq/webview/ui/connector'
 import { isPresent } from '../../shared/utilities/collectionUtils'
 import { encodeHTML } from '../../shared/utilities/textUtilities'
 import { AuthUtil } from '../../codewhisperer/util/authUtil'
+import { randomUUID } from '../../common/crypto'
+import { collectFiles, getWorkspaceFoldersByPrefixes } from '../../shared/utilities/workspaceUtils'
 
 export class ConversationNotStartedState implements Omit<SessionState, 'uploadId'> {
     public tokenSource: vscode.CancellationTokenSource
@@ -55,6 +56,11 @@ export class PrepareRefinementState implements Omit<SessionState, 'uploadId'> {
     constructor(private config: Omit<SessionStateConfig, 'uploadId'>, public approach: string, public tabID: string) {
         this.tokenSource = new vscode.CancellationTokenSource()
     }
+
+    updateWorkspaceRoot(workspaceRoot: string) {
+        this.config.workspaceRoots = [workspaceRoot]
+    }
+
     async interact(action: SessionStateAction): Promise<SessionStateInteraction> {
         const uploadId = await telemetry.amazonq_createUpload.run(async span => {
             span.record({
@@ -62,7 +68,7 @@ export class PrepareRefinementState implements Omit<SessionState, 'uploadId'> {
                 credentialStartUrl: AuthUtil.instance.startUrl,
             })
             const { zipFileBuffer, zipFileChecksum } = await prepareRepoData(
-                this.config.sourceRoots,
+                this.config.workspaceRoots,
                 this.config.workspaceFolders,
                 action.telemetry,
                 span
@@ -452,6 +458,11 @@ export class PrepareCodeGenState implements SessionState {
         this.uploadId = config.uploadId
         this.conversationId = config.conversationId
     }
+
+    updateWorkspaceRoot(workspaceRoot: string) {
+        this.config.workspaceRoots = [workspaceRoot]
+    }
+
     async interact(action: SessionStateAction): Promise<SessionStateInteraction> {
         action.messenger.sendAnswer({
             message: 'Uploading code ...',
@@ -461,7 +472,7 @@ export class PrepareCodeGenState implements SessionState {
 
         const uploadId = await telemetry.amazonq_createUpload.run(async span => {
             const { zipFileBuffer, zipFileChecksum } = await prepareRepoData(
-                this.config.sourceRoots,
+                this.config.workspaceRoots,
                 this.config.workspaceFolders,
                 action.telemetry,
                 span

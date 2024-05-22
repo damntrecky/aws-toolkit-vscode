@@ -7,7 +7,7 @@ import assert from 'assert'
 import * as vscode from 'vscode'
 import * as sinon from 'sinon'
 import { DefaultCodeWhispererClient } from '../../../codewhisperer/client/codewhisperer'
-import { assertTelemetryCurried } from '../../testUtil'
+import { assertTelemetryCurried, tryRegister } from '../../testUtil'
 import { RecommendationsList } from '../../../codewhisperer/client/codewhisperer'
 import { ConfigurationEntry } from '../../../codewhisperer/models/model'
 import { createMockTextEditor, resetCodeWhispererGlobalVariables } from '../testUtil'
@@ -23,8 +23,7 @@ import { extensionVersion } from '../../../shared/vscode/env'
 import { AuthUtil } from '../../../codewhisperer/util/authUtil'
 import { session } from '../../../codewhisperer/util/codeWhispererSession'
 import { ReferenceInlineProvider } from '../../../codewhisperer/service/referenceInlineProvider'
-
-const performance = globalThis.performance ?? require('perf_hooks').performance
+import { refreshStatusBar } from '../../../codewhisperer/service/inlineCompletionService'
 
 describe('recommendationHandler', function () {
     const config: ConfigurationEntry = {
@@ -58,6 +57,8 @@ describe('recommendationHandler', function () {
         })
 
         it('should assign correct recommendations given input', async function () {
+            tryRegister(refreshStatusBar)
+
             assert.strictEqual(CodeWhispererCodeCoverageTracker.instances.size, 0)
             assert.strictEqual(
                 CodeWhispererCodeCoverageTracker.getTracker(mockEditor.document.languageId, fakeMemeto)

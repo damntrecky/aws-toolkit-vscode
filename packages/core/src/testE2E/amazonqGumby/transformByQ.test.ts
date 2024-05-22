@@ -3,17 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import assert from 'assert'
-import { getSha256, uploadArtifactToS3, zipCode } from '../../codewhisperer/service/transformByQHandler'
-import request from '../../common/request'
-import * as CodeWhispererConstants from '../../codewhisperer/models/constants'
-import * as codeWhisperer from '../../codewhisperer/client/codewhisperer'
 import * as os from 'os'
 import * as path from 'path'
 import * as fs from 'fs-extra'
+import * as CodeWhispererConstants from '../../codewhisperer/models/constants'
+import * as codeWhisperer from '../../codewhisperer/client/codewhisperer'
+import assert from 'assert'
+import { getSha256, uploadArtifactToS3, zipCode } from '../../codewhisperer/service/transformByQ/transformApiHandler'
+import request from '../../common/request'
 import AdmZip from 'adm-zip'
 import { setValidConnection } from '../util/amazonQUtil'
-import { transformByQState } from '../../codewhisperer/models/model'
+import { transformByQState, ZipManifest } from '../../codewhisperer/models/model'
 
 describe('transformByQ', async function () {
     let tempDir = ''
@@ -33,7 +33,14 @@ describe('transformByQ', async function () {
         tempFilePath = path.join(tempDir, tempFileName)
         fs.writeFileSync(tempFilePath, 'sample content for the test file')
         transformByQState.setProjectPath(tempDir)
-        zippedCodePath = await zipCode()
+        zippedCodePath = await zipCode({
+            dependenciesFolder: {
+                path: tempFilePath,
+                name: tempFileName,
+            },
+            modulePath: tempDir,
+            zipManifest: new ZipManifest(),
+        })
     })
 
     after(async function () {

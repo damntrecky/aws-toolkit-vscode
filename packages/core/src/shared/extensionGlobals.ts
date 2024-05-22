@@ -76,44 +76,89 @@ function getBrowserAlternatives() {
 }
 
 /**
- * Why was the following implemented this way?
+ * XXX: Web-mode tests (as opposed to Node.js tests) don't see changes to exported module variables.
  *
- * With the introduction of browser support + setting up browser unit tests,
- * it was discovered that variables declared at the global scope were not available
- * between the actual extension code and the unit tests. Though for the regular desktop/node
- * tests, global scope variables WERE shared and the following was not required.
- *
- * So as a solution, any global scoped objects must be stored in `globalThis` so that if defined
- * in Browser-compatible extension code, it shares the same context/scope as the Browser unit test code.
+ * Workaround: store variables in `globalThis` so that web-mode tests can share them.
  *
  * See `web.md` for more info.
+ *
+ * Note: The returned globals is shared across all extensions/the entire VS Code instance.
+ *
  */
-function resolveGlobalsObject() {
+function resolveGlobalsObject(): ToolkitGlobals {
     if ((globalThis as any).globals === undefined) {
         ;(globalThis as any).globals = { clock: copyClock() } as ToolkitGlobals
     }
     return (globalThis as any).globals
 }
 
-const globals: ToolkitGlobals = resolveGlobalsObject()
+/**
+ * Throw a more intuitive error if any code tries to use `globals` before `initialize()` was called.
+ */
+function proxyGlobals(globals_: ToolkitGlobals): ToolkitGlobals {
+    return new Proxy(globals_, {
+        get: (target, prop) => {
+            // Test for initialize()
+            if (
+                !initialized &&
+                !target.isWeb // extension instance globals would have set this truly globally prior to the test instance globals being accessed.
+            ) {
+                throw new Error(`ToolkitGlobals accessed before initialize()`)
+            }
+
+            // Test that the property was set before access.
+            // Tradeoff: not being able to do something like `globals.myValue ??= ...` without a try/catch
+            const propName = String(prop)
+            const val = (target as any)[propName]
+            if (
+                val !== undefined ||
+                propName.includes('Symbol') // hack for sinon.stub
+            ) {
+                return val
+            }
+            throw new Error(`ToolkitGlobals.${propName} accessed, but this property is not set.`)
+        },
+    })
+}
+
+/**
+ * Extension globals object.
+ * Unless this is running in web mode, these globals are scoped only to the current extension.
+ *
+ * TODO: If multiple extensions are running in webmode, they will override and access
+ * each other's globals. We should partition globalThis by extension ID.
+ */
+let globals = proxyGlobals(resolveGlobalsObject())
 
 export function checkDidReload(context: ExtensionContext): boolean {
     return !!context.globalState.get<string>('ACTIVATION_LAUNCH_PATH_KEY')
 }
 
-export function initialize(context: ExtensionContext): ToolkitGlobals {
+let initialized = false
+export function initialize(context: ExtensionContext, isWeb: boolean = false): ToolkitGlobals {
+    if (!isWeb) {
+        // Not running in web mode, let's use globals scoped to the current extension only.
+        globals = proxyGlobals({} as ToolkitGlobals)
+    }
     Object.assign(globals, {
         context,
         clock: copyClock(),
         didReload: checkDidReload(context),
         manifestPaths: {} as ToolkitGlobals['manifestPaths'],
         visualizationResourcePaths: {} as ToolkitGlobals['visualizationResourcePaths'],
+        isWeb,
     })
+
+    initialized = true
 
     return globals
 }
 
-export default globals
+export function isWeb() {
+    return globals.isWeb
+}
+
+export { globals as default }
 
 /**
  * Namespace for common variables used globally in the extension.
@@ -121,9 +166,11 @@ export default globals
  */
 interface ToolkitGlobals {
     readonly context: ExtensionContext
+    /** Decides the prefix for package.json extension parameters, e.g. commands, 'setContext' values, etc. */
+    contextPrefix: string
     // TODO: make the rest of these readonly (or delete them)
     outputChannel: OutputChannel
-    invokeOutputChannel: OutputChannel
+    logOutputChannel: OutputChannel
     loginManager: LoginManager
     awsContextCommands: AwsContextCommands
     awsContext: AwsContext

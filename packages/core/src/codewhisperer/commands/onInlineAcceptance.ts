@@ -29,9 +29,10 @@ import { ImportAdderProvider } from '../service/importAdderProvider'
 import { session } from '../util/codeWhispererSession'
 import path from 'path'
 import { RecommendationService } from '../service/recommendationService'
+import { Container } from '../service/serviceContainer'
 
 export const acceptSuggestion = Commands.declare(
-    'aws.codeWhisperer.accept',
+    'aws.amazonq.accept',
     (context: ExtContext) =>
         async (
             range: vscode.Range,
@@ -47,6 +48,7 @@ export const acceptSuggestion = Commands.declare(
         ) => {
             RecommendationService.instance.incrementAcceptedCount()
             const editor = vscode.window.activeTextEditor
+            await Container.instance.lineAnnotationController.refresh(editor, 'codewhisperer')
             const onAcceptanceFunc = isInlineCompletionEnabled() ? onInlineAcceptance : onAcceptance
             await onAcceptanceFunc(
                 {

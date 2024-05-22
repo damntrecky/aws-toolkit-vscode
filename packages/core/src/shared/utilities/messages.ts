@@ -6,7 +6,7 @@
 import * as vscode from 'vscode'
 import * as nls from 'vscode-nls'
 import * as localizedText from '../localizedText'
-import { getLogger, showLogOutputChannel } from '../../shared/logger'
+import { getLogger } from '../../shared/logger'
 import { ProgressEntry } from '../../shared/vscode/window'
 import { getIdeProperties, isCloud9 } from '../extensionUtilities'
 import { sleep } from './timeoutUtils'
@@ -15,6 +15,9 @@ import { addCodiconToString } from './textUtilities'
 import { getIcon, codicon } from '../icons'
 import globals from '../extensionGlobals'
 import { openUrl } from './vsCodeUtils'
+import { AmazonQPromptSettings, ToolkitPromptSettings } from '../../shared/settings'
+import { telemetry } from '../telemetry/telemetry'
+import { vscodeComponent } from '../vscode/commands2'
 
 export const messages = {
     editCredentials(icon: boolean) {
@@ -102,7 +105,7 @@ export async function showViewLogsMessage(
     const p = showMessageWithItems(message, kind, items)
     return p.then<string | undefined>(selection => {
         if (selection === logsItem) {
-            showLogOutputChannel()
+            globals.logOutputChannel.show(true)
         }
         return selection
     })
@@ -137,6 +140,54 @@ export async function showConfirmationMessage({
         const selection = await vscode.window.showWarningMessage(prompt, { modal: true }, confirmItem, cancelItem)
         return selection?.title === confirmItem.title
     }
+}
+
+/**
+ * Shows a prompt for the user to reauthenticate
+ *
+ * @param message the line informing the user that they need to reauthenticate
+ * @param connect the text to display on the "connect" button
+ * @param suppressId the ID of the prompt in
+ * @param reauthFunc the function called if the "connect" button is clicked
+ */
+export async function showReauthenticateMessage({
+    message,
+    connect,
+    suppressId,
+    settings,
+    reauthFunc,
+    source = vscodeComponent,
+}: {
+    message: string
+    connect: string
+    suppressId: string // Parameters<PromptSettings['isPromptEnabled']>[0]
+    settings: AmazonQPromptSettings | ToolkitPromptSettings
+    reauthFunc: () => Promise<void>
+    source?: string
+}) {
+    const shouldShow = await settings.isPromptEnabled(suppressId as any)
+    if (!shouldShow) {
+        return
+    }
+
+    await telemetry.toolkit_showNotification.run(async () => {
+        telemetry.record({ id: suppressId, source })
+        await vscode.window.showInformationMessage(message, connect, localizedText.dontShow).then(async resp => {
+            await telemetry.toolkit_invokeAction.run(async () => {
+                telemetry.record({ id: suppressId, source })
+
+                if (resp === connect) {
+                    telemetry.record({ action: 'connect' })
+                    await reauthFunc()
+                } else if (resp === localizedText.dontShow) {
+                    telemetry.record({ action: 'suppress' })
+                    await settings.disablePrompt(suppressId as any)
+                } else {
+                    telemetry.record({ action: 'dismiss' })
+                }
+            })
+        })
+    })
 }
 
 /**

@@ -11,22 +11,31 @@ import { EventEmitter } from 'vscode'
 import { telemetry } from '../../../shared/telemetry/telemetry'
 import { createSingleFileDialog } from '../../../shared/ui/common/openDialog'
 import { featureDevScheme } from '../../constants'
-import { ContentLengthError, SelectedFolderNotInWorkspaceFolderError, createUserFacingErrorMessage } from '../../errors'
+import {
+    CodeIterationLimitError,
+    ContentLengthError,
+    MonthlyConversationLimitError,
+    PlanIterationLimitError,
+    SelectedFolderNotInWorkspaceFolderError,
+    WorkspaceFolderNotFoundError,
+    createUserFacingErrorMessage,
+} from '../../errors'
 import { defaultRetryLimit } from '../../limits'
 import { Session } from '../../session/session'
 import { featureName } from '../../constants'
 import { ChatSessionStorage } from '../../storages/chatSession'
 import { FollowUpTypes, SessionStatePhase } from '../../types'
 import { Messenger } from './messenger/messenger'
-import { AuthUtil, getChatAuthState } from '../../../codewhisperer/util/authUtil'
+import { AuthUtil } from '../../../codewhisperer/util/authUtil'
 import { AuthController } from '../../../amazonq/auth/controller'
 import { getLogger } from '../../../shared/logger'
 import { submitFeedback } from '../../../feedback/vue/submitFeedback'
 import { placeholder } from '../../../shared/vscode/commands2'
 import { EditorContentController } from '../../../amazonq/commons/controllers/contentController'
 import { openUrl } from '../../../shared/utilities/vsCodeUtils'
-import { getPathsFromZipFilePath, getWorkspaceFoldersByPrefixes } from '../../util/files'
+import { getPathsFromZipFilePath } from '../../util/files'
 import { examples, newTaskChanges, approachCreation, sessionClosed, updateCode } from '../../userFacingText'
+import { getWorkspaceFoldersByPrefixes } from '../../../shared/utilities/workspaceUtils'
 
 export interface ChatControllerEventEmitters {
     readonly processHumanChatMessage: EventEmitter<any>
@@ -186,7 +195,7 @@ export class FeatureDevController {
     // TODO add type
     private async processUserChatMessage(message: any) {
         if (message.message === undefined) {
-            this.messenger.sendErrorMessage('chatMessage should be set', message.tabID, 0, undefined)
+            this.messenger.sendErrorMessage('chatMessage should be set', message.tabID, 0, undefined, undefined)
             return
         }
 
@@ -206,7 +215,7 @@ export class FeatureDevController {
 
             session = await this.sessionStorage.getSession(message.tabID)
 
-            const authState = await getChatAuthState()
+            const authState = await AuthUtil.instance.getChatAuthState()
             if (authState.amazonQ !== 'connected') {
                 await this.messenger.sendAuthNeededExceptionMessage(authState, message.tabID)
                 session.isAuthenticating = true
@@ -224,7 +233,13 @@ export class FeatureDevController {
             }
         } catch (err: any) {
             if (err instanceof ContentLengthError) {
-                this.messenger.sendErrorMessage(err.message, message.tabID, this.retriesRemaining(session))
+                this.messenger.sendErrorMessage(
+                    err.message,
+                    message.tabID,
+                    this.retriesRemaining(session),
+                    undefined,
+                    session?.conversationIdUnsafe
+                )
                 this.messenger.sendAnswer({
                     type: 'system-prompt',
                     tabID: message.tabID,
@@ -236,6 +251,52 @@ export class FeatureDevController {
                         },
                     ],
                 })
+            } else if (err instanceof MonthlyConversationLimitError) {
+                this.messenger.sendMonthlyLimitError(message.tabID)
+            } else if (err instanceof PlanIterationLimitError) {
+                this.messenger.sendErrorMessage(
+                    err.message,
+                    message.tabID,
+                    this.retriesRemaining(session),
+                    undefined,
+                    session?.conversationIdUnsafe
+                )
+                this.messenger.sendAnswer({
+                    type: 'system-prompt',
+                    tabID: message.tabID,
+                    followUps: [
+                        {
+                            pillText: 'Discuss a new plan',
+                            type: FollowUpTypes.NewTask,
+                            status: 'info',
+                        },
+                        {
+                            pillText: 'Generate code',
+                            type: FollowUpTypes.GenerateCode,
+                            status: 'info',
+                        },
+                    ],
+                })
+            } else if (err instanceof CodeIterationLimitError) {
+                this.messenger.sendErrorMessage(
+                    err.message,
+                    message.tabID,
+                    this.retriesRemaining(session),
+                    undefined,
+                    session?.conversationIdUnsafe
+                )
+                this.messenger.sendAnswer({
+                    type: 'system-prompt',
+                    tabID: message.tabID,
+                    followUps: [
+                        {
+                            pillText: 'Insert code',
+                            type: FollowUpTypes.InsertCode,
+                            icon: 'ok' as MynahIcons,
+                            status: 'success',
+                        },
+                    ],
+                })
             } else {
                 const errorMessage = createUserFacingErrorMessage(
                     `${featureName} request failed: ${err.cause?.message ?? err.message}`
@@ -244,7 +305,8 @@ export class FeatureDevController {
                     errorMessage,
                     message.tabID,
                     this.retriesRemaining(session),
-                    session?.state.phase
+                    session?.state.phase,
+                    session?.conversationIdUnsafe
                 )
             }
 
@@ -258,6 +320,8 @@ export class FeatureDevController {
      */
     private async onApproachGeneration(session: Session, message: string, tabID: string) {
         await session.preloader(message)
+
+        getLogger().info(`${featureName} conversation id: ${session.conversationId}`)
 
         this.messenger.sendAnswer({
             type: 'answer',
@@ -304,6 +368,8 @@ export class FeatureDevController {
      * Handle a regular incoming message when a user is in the code generation phase
      */
     private async onCodeGeneration(session: Session, message: string, tabID: string) {
+        getLogger().info(`Q - Dev chat conversation id: ${session.conversationId}`)
+
         // lock the UI/show loading bubbles
         this.messenger.sendAsyncEventProgress(
             tabID,
@@ -375,7 +441,7 @@ export class FeatureDevController {
             if (!this.isAmazonQVisible) {
                 const open = 'Open chat'
                 const resp = await vscode.window.showInformationMessage(
-                    'Your code suggestions from Amazon Q are ready to review',
+                    'The Amazon Q Developer Agent for software development has generated code for you to review',
                     open
                 )
                 if (resp === open) {
@@ -401,7 +467,8 @@ export class FeatureDevController {
                 errorMessage,
                 message.tabID,
                 this.retriesRemaining(session),
-                session?.state.phase
+                session?.state.phase,
+                session?.conversationIdUnsafe
             )
         }
     }
@@ -411,9 +478,15 @@ export class FeatureDevController {
         let session
         try {
             session = await this.sessionStorage.getSession(message.tabID)
+
+            const acceptedFiles = (paths?: { rejected: boolean }[]) => (paths || []).filter(i => !i.rejected).length
+
+            const amazonqNumberOfFilesAccepted =
+                acceptedFiles(session.state.filePaths) + acceptedFiles(session.state.deletedFiles)
+
             telemetry.amazonq_isAcceptedCodeChanges.emit({
                 amazonqConversationId: session.conversationId,
-                amazonqNumberOfFilesAccepted: session.state.filePaths?.filter(i => !i.rejected).length ?? -1,
+                amazonqNumberOfFilesAccepted,
                 enabled: true,
                 result: 'Succeeded',
             })
@@ -450,7 +523,8 @@ export class FeatureDevController {
                 createUserFacingErrorMessage(`Failed to insert code changes: ${err.message}`),
                 message.tabID,
                 this.retriesRemaining(session),
-                session?.state.phase
+                session?.state.phase,
+                session?.conversationIdUnsafe
             )
         }
     }
@@ -494,7 +568,8 @@ export class FeatureDevController {
                 createUserFacingErrorMessage(`Failed to retry request: ${err.message}`),
                 message.tabID,
                 this.retriesRemaining(session),
-                session?.state.phase
+                session?.state.phase,
+                session?.conversationIdUnsafe
             )
         } finally {
             // Finish processing the event
@@ -540,6 +615,8 @@ export class FeatureDevController {
             canSelectFiles: false,
         }).prompt()
 
+        let metricData: { result: 'Succeeded' } | { result: 'Failed'; reason: string } | undefined
+
         if (!(uri instanceof vscode.Uri)) {
             this.messenger.sendAnswer({
                 tabID: message.tabID,
@@ -552,10 +629,8 @@ export class FeatureDevController {
                     },
                 ],
             })
-            return
-        }
-
-        if (uri instanceof vscode.Uri && !vscode.workspace.getWorkspaceFolder(uri)) {
+            metricData = { result: 'Failed', reason: 'ClosedBeforeSelection' }
+        } else if (!vscode.workspace.getWorkspaceFolder(uri)) {
             this.messenger.sendAnswer({
                 tabID: message.tabID,
                 type: 'answer',
@@ -572,17 +647,22 @@ export class FeatureDevController {
                     },
                 ],
             })
-            return
-        }
-
-        if (uri && uri instanceof vscode.Uri) {
-            session.config.sourceRoots = [uri.fsPath]
+            metricData = { result: 'Failed', reason: 'NotInWorkspaceFolder' }
+        } else {
+            session.updateWorkspaceRoot(uri.fsPath)
+            metricData = { result: 'Succeeded' }
             this.messenger.sendAnswer({
                 message: `Changed source root to: ${uri.fsPath}`,
                 type: 'answer',
                 tabID: message.tabID,
             })
         }
+
+        telemetry.amazonq_modifySourceFolder.emit({
+            credentialStartUrl: AuthUtil.instance.startUrl,
+            amazonqConversationId: session.conversationId,
+            ...metricData,
+        })
     }
 
     private initialExamples(message: any) {
@@ -667,19 +747,29 @@ export class FeatureDevController {
             session = await this.sessionStorage.getSession(message.tabID)
             getLogger().debug(`${featureName}: Session created with id: ${session.tabID}`)
 
-            const authState = await getChatAuthState()
+            const authState = await AuthUtil.instance.getChatAuthState()
             if (authState.amazonQ !== 'connected') {
                 void this.messenger.sendAuthNeededExceptionMessage(authState, message.tabID)
                 session.isAuthenticating = true
                 return
             }
         } catch (err: any) {
-            this.messenger.sendErrorMessage(
-                createUserFacingErrorMessage(err.message),
-                message.tabID,
-                this.retriesRemaining(session),
-                session?.state.phase
-            )
+            if (err instanceof WorkspaceFolderNotFoundError) {
+                this.messenger.sendAnswer({
+                    type: 'answer',
+                    tabID: message.tabID,
+                    message: err.message,
+                })
+                this.messenger.sendChatInputEnabled(message.tabID, false)
+            } else {
+                this.messenger.sendErrorMessage(
+                    createUserFacingErrorMessage(err.message),
+                    message.tabID,
+                    this.retriesRemaining(session),
+                    session?.state.phase,
+                    session?.conversationIdUnsafe
+                )
+            }
         }
     }
 
@@ -713,7 +803,7 @@ export class FeatureDevController {
             tabID: message.tabID,
             message: newTaskChanges,
         })
-        this.messenger.sendUpdatePlaceholder(message.tabID, 'Briefly describe a task or issue')
+        this.messenger.sendUpdatePlaceholder(message.tabID, 'Describe your task or issue in as much detail as possible')
     }
 
     private async closeSession(message: any) {
@@ -734,7 +824,7 @@ export class FeatureDevController {
     }
 
     private sendFeedback() {
-        void submitFeedback.execute(placeholder, 'Amazon Q')
+        void submitFeedback(placeholder, 'Amazon Q')
     }
 
     private processLink(message: any) {

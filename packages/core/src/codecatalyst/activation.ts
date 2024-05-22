@@ -11,19 +11,20 @@ import { CodeCatalystRemoteSourceProvider } from './repos/remoteSourceProvider'
 import { CodeCatalystCommands } from './commands'
 import { GitExtension } from '../shared/extensions/git'
 import { CodeCatalystAuthenticationProvider } from './auth'
-import { registerDevfileWatcher } from './devfile'
-import { DevEnvClient, DevEnvActivity } from '../shared/clients/devenvClient'
+import { registerDevfileWatcher, updateDevfileCommand } from './devfile'
+import { DevEnvClient } from '../shared/clients/devenvClient'
 import { watchRestartingDevEnvs } from './reconnect'
-import { PromptSettings } from '../shared/settings'
+import { ToolkitPromptSettings } from '../shared/settings'
 import { dontShow } from '../shared/localizedText'
 import { getIdeProperties, isCloud9 } from '../shared/extensionUtilities'
 import { Commands, placeholder } from '../shared/vscode/commands2'
-import { getCodeCatalystConfig } from '../shared/clients/codecatalystClient'
+import { createClient, getCodeCatalystConfig } from '../shared/clients/codecatalystClient'
 import { isDevenvVscode } from './utils'
-import { getThisDevEnv } from './model'
+import { codeCatalystConnectCommand, getThisDevEnv } from './model'
 import { getLogger } from '../shared/logger/logger'
-import { InactivityMessage, shouldTrackUserActivity } from './devEnv'
-import { showManageConnections } from '../auth/ui/vue/show'
+import { DevEnvActivityStarter } from './devEnv'
+import { learnMoreCommand, onboardCommand, reauth } from './explorer'
+import { getShowManageConnections } from '../login/command'
 
 const localize = nls.loadMessageBundle()
 
@@ -35,13 +36,30 @@ export async function activate(ctx: ExtContext): Promise<void> {
     const commands = new CodeCatalystCommands(authProvider)
     const remoteSourceProvider = new CodeCatalystRemoteSourceProvider(commands, authProvider)
 
+    codeCatalystConnectCommand.register()
+    reauth.register()
+    onboardCommand.register()
+    updateDevfileCommand.register()
+    learnMoreCommand.register()
+
     await authProvider.restore()
+
+    // if connection is shared with CodeWhisperer, check if CodeCatalyst scopes are expired
+    if (authProvider.activeConnection && authProvider.isSharedConn()) {
+        try {
+            await createClient(authProvider.activeConnection, undefined, undefined, undefined, {
+                showReauthPrompt: false,
+            })
+        } catch (err) {
+            getLogger().info('codecatalyst: createClient failed during activation: %s', err)
+        }
+    }
 
     ctx.extensionContext.subscriptions.push(
         uriHandlers.register(ctx.uriHandler, CodeCatalystCommands.declared),
         ...Object.values(CodeCatalystCommands.declared).map(c => c.register(commands)),
         Commands.register('aws.codecatalyst.manageConnections', () => {
-            return showManageConnections.execute(placeholder, 'codecatalystDeveloperTools', 'codecatalyst')
+            return getShowManageConnections().execute(placeholder, 'codecatalystDeveloperTools', 'codecatalyst')
         }),
         Commands.register('aws.codecatalyst.signout', () => {
             return authProvider.secondaryAuth.deleteConnection()
@@ -89,7 +107,7 @@ export async function activate(ctx: ExtContext): Promise<void> {
 
         await showReadmeFileOnFirstLoad(ctx.extensionContext.workspaceState)
 
-        const settings = PromptSettings.instance
+        const settings = ToolkitPromptSettings.instance
         if (await settings.isPromptEnabled('remoteConnected')) {
             const message = localize(
                 'AWS.codecatalyst.connectedMessage',
@@ -105,17 +123,10 @@ export async function activate(ctx: ExtContext): Promise<void> {
                 }
             })
         }
-
-        const maxInactivityMinutes = thisDevenv.summary.inactivityTimeoutMinutes
-        const devEnvClient = thisDevenv.devenvClient
-        const devEnvActivity = await DevEnvActivity.instanceIfActivityTrackingEnabled(devEnvClient)
-        if (shouldTrackUserActivity(maxInactivityMinutes) && devEnvActivity) {
-            const inactivityMessage = new InactivityMessage()
-            await inactivityMessage.setupMessage(maxInactivityMinutes, devEnvActivity)
-
-            ctx.extensionContext.subscriptions.push(inactivityMessage, devEnvActivity)
-        }
     }
+
+    // This must always be called on activation
+    DevEnvActivityStarter.register(authProvider)
 }
 
 async function showReadmeFileOnFirstLoad(workspaceState: vscode.ExtensionContext['workspaceState']): Promise<void> {

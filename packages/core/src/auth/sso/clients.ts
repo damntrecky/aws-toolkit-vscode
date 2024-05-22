@@ -31,13 +31,15 @@ import { SsoAccessTokenProvider } from './ssoAccessTokenProvider'
 import { isClientFault } from '../../shared/errors'
 import { DevSettings } from '../../shared/settings'
 import { SdkError } from '@aws-sdk/types'
-import { HttpRequest, HttpResponse } from '@aws-sdk/protocol-http'
-import { StandardRetryStrategy, defaultRetryDecider } from '@aws-sdk/middleware-retry'
+import { HttpRequest, HttpResponse } from '@smithy/protocol-http'
+import { StandardRetryStrategy, defaultRetryDecider } from '@smithy/middleware-retry'
+import { AuthenticationFlow } from './model'
+import { toSnakeCase } from '../../shared/utilities/textUtilities'
 
 export class OidcClient {
     public constructor(private readonly client: SSOOIDC, private readonly clock: { Date: typeof Date }) {}
 
-    public async registerClient(request: RegisterClientRequest) {
+    public async registerClient(request: RegisterClientRequest, startUrl: string, flow?: AuthenticationFlow) {
         const response = await this.client.registerClient(request)
         assertHasProps(response, 'clientId', 'clientSecret', 'clientSecretExpiresAt')
 
@@ -46,6 +48,8 @@ export class OidcClient {
             clientId: response.clientId,
             clientSecret: response.clientSecret,
             expiresAt: new this.clock.Date(response.clientSecretExpiresAt * 1000),
+            startUrl,
+            ...(flow ? { flow } : {}),
         }
     }
 
@@ -58,6 +62,23 @@ export class OidcClient {
             expiresAt: new this.clock.Date(response.expiresIn * 1000 + this.clock.Date.now()),
             interval: response.interval ? response.interval * 1000 : undefined,
         }
+    }
+
+    public async authorize(request: {
+        responseType: string
+        clientId: string
+        redirectUri: string
+        scopes: string[]
+        state: string
+        codeChallenge: string
+        codeChallengeMethod: string
+    }) {
+        // aws sdk doesn't convert to url params until right before you make the request, so we have to do
+        // it manually ahead of time
+        const params = toSnakeCase(request)
+        const searchParams = new URLSearchParams(params).toString()
+        const region = await this.client.config.region()
+        return `https://oidc.${region}.amazonaws.com/authorize?${searchParams}`
     }
 
     public async createToken(request: CreateTokenRequest) {

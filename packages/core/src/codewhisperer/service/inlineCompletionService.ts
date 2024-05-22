@@ -19,9 +19,7 @@ import { codicon, getIcon } from '../../shared/icons'
 import { session } from '../util/codeWhispererSession'
 import { noSuggestions } from '../models/constants'
 import { Commands } from '../../shared/vscode/commands2'
-import { listCodeWhispererCommandsId } from '../commands/statusBarCommands'
-
-const performance = globalThis.performance ?? require('perf_hooks').performance
+import { listCodeWhispererCommandsId } from '../ui/statusBarMenu'
 
 export class InlineCompletionService {
     private maxPage = 100
@@ -88,7 +86,7 @@ export class InlineCompletionService {
         if (vsCodeState.isCodeWhispererEditing || RecommendationHandler.instance.isSuggestionVisible()) {
             return {
                 result: 'Failed',
-                errorMessage: 'codewhisperer already is running',
+                errorMessage: 'Amazon Q is already running',
                 recommendationCount: 0,
             }
         }
@@ -136,7 +134,10 @@ export class InlineCompletionService {
                 )
                 if (RecommendationHandler.instance.checkAndResetCancellationTokens()) {
                     RecommendationHandler.instance.reportUserDecisions(-1)
-                    await vscode.commands.executeCommand('aws.codeWhisperer.refreshStatusBar')
+                    await vscode.commands.executeCommand('aws.amazonq.refreshStatusBar')
+                    if (triggerType === 'OnDemand' && session.recommendations.length === 0) {
+                        void showTimedMessage(response.errorMessage ? response.errorMessage : noSuggestions, 2000)
+                    }
                     return {
                         result: 'Failed',
                         errorMessage: 'cancelled',
@@ -151,7 +152,7 @@ export class InlineCompletionService {
         } catch (error) {
             getLogger().error(`Error ${error} in getPaginatedRecommendation`)
         }
-        await vscode.commands.executeCommand('aws.codeWhisperer.refreshStatusBar')
+        await vscode.commands.executeCommand('aws.amazonq.refreshStatusBar')
         if (triggerType === 'OnDemand' && session.recommendations.length === 0) {
             void showTimedMessage(response.errorMessage ? response.errorMessage : noSuggestions, 2000)
         }
@@ -222,10 +223,11 @@ export class CodeWhispererStatusBar {
         statusBar.command = listCodeWhispererCommandsId
         statusBar.backgroundColor = undefined
 
+        const title = 'Amazon Q'
         switch (status) {
             case 'loading': {
                 const selectedCustomization = getSelectedCustomization()
-                statusBar.text = codicon` ${getIcon('vscode-loading~spin')} CodeWhisperer${
+                statusBar.text = codicon` ${getIcon('vscode-loading~spin')} ${title}${
                     selectedCustomization.arn === '' ? '' : ` | ${selectedCustomization.name}`
                 }`
                 break
@@ -233,19 +235,20 @@ export class CodeWhispererStatusBar {
             case 'ok': {
                 const selectedCustomization = getSelectedCustomization()
                 const icon = isSuggestionsEnabled ? getIcon('vscode-debug-start') : getIcon('vscode-debug-pause')
-                statusBar.text = codicon`${icon} CodeWhisperer${
+                statusBar.text = codicon`${icon} ${title}${
                     selectedCustomization.arn === '' ? '' : ` | ${selectedCustomization.name}`
                 }`
                 break
             }
 
             case 'expired': {
-                statusBar.text = codicon` ${getIcon('vscode-debug-disconnect')} CodeWhisperer`
+                statusBar.text = codicon` ${getIcon('vscode-debug-disconnect')} ${title}`
                 statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground')
                 break
             }
             case 'notConnected':
-                statusBar.text = codicon` ${getIcon('vscode-chrome-close')} CodeWhisperer`
+                statusBar.text = codicon` ${getIcon('vscode-chrome-close')} ${title}`
+                statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground')
                 break
         }
 
@@ -255,7 +258,7 @@ export class CodeWhispererStatusBar {
 
 /** In this module due to circulare dependency issues */
 export const refreshStatusBar = Commands.declare(
-    { id: 'aws.codeWhisperer.refreshStatusBar', logging: false },
+    { id: 'aws.amazonq.refreshStatusBar', logging: false },
     () => async () => {
         await InlineCompletionService.instance.refreshStatusBar()
     }

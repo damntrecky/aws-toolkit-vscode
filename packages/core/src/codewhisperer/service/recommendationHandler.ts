@@ -50,8 +50,6 @@ import path from 'path'
  * It does not contain UI/UX related logic
  */
 
-const performance = globalThis.performance ?? require('perf_hooks').performance
-
 // below commands override VS Code inline completion commands
 const prevCommand = Commands.declare('editor.action.inlineSuggest.showPrevious', () => async () => {
     await RecommendationHandler.instance.showRecommendation(-1)
@@ -60,8 +58,10 @@ const nextCommand = Commands.declare('editor.action.inlineSuggest.showNext', () 
     await RecommendationHandler.instance.showRecommendation(1)
 })
 
-const rejectCommand = Commands.declare('aws.codeWhisperer.rejectCodeSuggestion', () => async () => {
+const rejectCommand = Commands.declare('aws.amazonq.rejectCodeSuggestion', () => async () => {
     RecommendationHandler.instance.reportUserDecisions(-1)
+
+    await Commands.tryExecute('aws.amazonq.refreshAnnotation')
 })
 
 const lock = new AsyncLock({ maxPending: 1 })
@@ -105,13 +105,12 @@ export class RecommendationHandler {
     async getServerResponse(
         triggerType: CodewhispererTriggerType,
         isManualTriggerOn: boolean,
-        isFirstPaginationCall: boolean,
         promise: Promise<any>
     ): Promise<any> {
         const timeoutMessage = hasVendedIamCredentials()
             ? 'Generate recommendation timeout.'
             : 'List recommendation timeout'
-        if (isManualTriggerOn && triggerType === 'OnDemand' && (hasVendedIamCredentials() || isFirstPaginationCall)) {
+        if (isManualTriggerOn && triggerType === 'OnDemand' && hasVendedIamCredentials()) {
             return vscode.window.withProgress(
                 {
                     location: vscode.ProgressLocation.Notification,
@@ -222,7 +221,7 @@ export class RecommendationHandler {
                 )
                 const languageName = request.fileContext.programmingLanguage.languageName
                 if (!runtimeLanguageContext.isLanguageSupported(languageName)) {
-                    errorMessage = `${languageName} is currently not supported by CodeWhisperer`
+                    errorMessage = `${languageName} is currently not supported by Amazon Q inline suggestions`
                 }
                 return Promise.resolve<GetRecommendationsResponse>({
                     result: invocationResult,
@@ -238,12 +237,7 @@ export class RecommendationHandler {
             const mappedReq = runtimeLanguageContext.mapToRuntimeLanguage(request)
             const codewhispererPromise =
                 pagination && !isSM ? client.listRecommendations(mappedReq) : client.generateRecommendations(mappedReq)
-            const resp = await this.getServerResponse(
-                triggerType,
-                config.isManualTriggerEnabled,
-                page === 0 && !retry,
-                codewhispererPromise
-            )
+            const resp = await this.getServerResponse(triggerType, config.isManualTriggerEnabled, codewhispererPromise)
             TelemetryHelper.instance.setSdkApiCallEndTime()
             latency = startTime !== 0 ? performance.now() - startTime : 0
             if ('recommendations' in resp) {
@@ -269,7 +263,7 @@ export class RecommendationHandler {
             if (latency === 0) {
                 latency = startTime !== 0 ? performance.now() - startTime : 0
             }
-            getLogger().error('CodeWhisperer Invocation Exception : %s', (error as Error).message)
+            getLogger().error('amazonq inline-suggest: Invocation Exception : %s', (error as Error).message)
             if (isAwsError(error)) {
                 errorMessage = error.message
                 requestId = error.requestId || ''
@@ -278,7 +272,7 @@ export class RecommendationHandler {
                 await this.onThrottlingException(error, triggerType)
 
                 if (error?.code === 'AccessDeniedException' && errorMessage?.includes('no identity-based policy')) {
-                    getLogger().error('CodeWhisperer AccessDeniedException : %s', (error as Error).message)
+                    getLogger().error('amazonq inline-suggest: AccessDeniedException : %s', (error as Error).message)
                     void vscode.window
                         .showErrorMessage(`CodeWhisperer: ${error?.message}`, CodeWhispererConstants.settingsLearnMore)
                         .then(async resp => {
@@ -286,7 +280,7 @@ export class RecommendationHandler {
                                 void openUrl(vscode.Uri.parse(CodeWhispererConstants.learnMoreUri))
                             }
                         })
-                    await vscode.commands.executeCommand('aws.codeWhisperer.enableCodeSuggestions', false)
+                    await vscode.commands.executeCommand('aws.amazonq.enableCodeSuggestions', false)
                 }
             } else {
                 errorMessage = error instanceof Error ? error.message : String(error)
@@ -460,7 +454,7 @@ export class RecommendationHandler {
             this.cancelPaginatedRequest()
             this.clearRecommendations()
             this.disposeInlineCompletion()
-            await vscode.commands.executeCommand('aws.codeWhisperer.refreshStatusBar')
+            await vscode.commands.executeCommand('aws.amazonq.refreshStatusBar')
             this.disposeCommandOverrides()
             // fix a regression that requires user to hit Esc twice to clear inline ghost text
             // because disposing a provider does not clear the UX
@@ -562,8 +556,7 @@ export class RecommendationHandler {
             if (triggerType === 'OnDemand') {
                 void vscode.window.showErrorMessage(CodeWhispererConstants.freeTierLimitReached)
             }
-            await vscode.commands.executeCommand('aws.codeWhisperer.refresh', true)
-            await Commands.tryExecute('aws.amazonq.refresh', true)
+            vsCodeState.isFreeTierLimitReached = true
         }
     }
 

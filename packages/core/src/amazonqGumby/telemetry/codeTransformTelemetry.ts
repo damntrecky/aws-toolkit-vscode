@@ -9,12 +9,8 @@
 import {
     CodeTransformJavaSourceVersionsAllowed,
     CodeTransformJavaTargetVersionsAllowed,
-    telemetry,
 } from '../../shared/telemetry/telemetry'
 import { JDKVersion } from '../../codewhisperer/models/model'
-import * as CodeWhispererConstants from '../../codewhisperer/models/constants'
-import { codeTransformTelemetryState } from './codeTransformTelemetryState'
-import { MetadataResult } from '../../shared/telemetry/telemetryClient'
 
 export const telemetryUndefined = 'undefined'
 
@@ -23,32 +19,7 @@ export enum CancelActionPositions {
     LoadingPanel = 'loadingPanelStopButton',
     DevToolsSidePanel = 'devToolsStopButton',
     BottomHubPanel = 'bottomPanelSideNavButton',
-}
-
-export enum StartActionPositions {
-    DevToolsSidePanel = 'devToolsStartButton',
-    BottomHubPanel = 'bottomPanelSideNavButton',
-    ChatPrompt = 'chatPrompt',
-}
-
-export const logCodeTransformInitiatedMetric = (source: string): void => {
-    const commonMetrics = {
-        codeTransformSessionId: codeTransformTelemetryState.getSessionId(),
-    }
-
-    if (source === CodeWhispererConstants.transformTreeNode) {
-        telemetry.codeTransform_isDoubleClickedToTriggerUserModal.emit({
-            codeTransformStartSrcComponents: StartActionPositions.DevToolsSidePanel,
-            ...commonMetrics,
-            result: MetadataResult.Pass,
-        })
-    } else if (source === StartActionPositions.BottomHubPanel) {
-        telemetry.codeTransform_isDoubleClickedToTriggerUserModal.emit({
-            codeTransformStartSrcComponents: StartActionPositions.BottomHubPanel,
-            ...commonMetrics,
-            result: MetadataResult.Pass,
-        })
-    }
+    Chat = 'qChatPanel',
 }
 
 export const JDKToTelemetryValue = (
@@ -61,6 +32,8 @@ export const JDKToTelemetryValue = (
             return 'JDK_11'
         case JDKVersion.JDK17:
             return 'JDK_17'
+        case JDKVersion.UNSUPPORTED:
+            return 'Other'
         default:
             return undefined
     }
@@ -116,4 +89,4 @@ export const javapOutputToTelemetryValue = (javapCommandLineOutput: string) => {
     }
 }
 
-export const calculateTotalLatency = (startTime: number, endTime: number = Date.now()): number => endTime - startTime
+export const calculateTotalLatency = (startTime: number): number => Date.now() - startTime

@@ -5,7 +5,7 @@
 
 import { TextEditor, Selection, TextDocument, Range } from 'vscode'
 
-import { Extent, Java, Python, Tsx, TypeScript, Location } from '@aws/fully-qualified-names'
+import { Extent, Java, Python, Location } from '@aws/fully-qualified-names'
 import { FocusAreaContext, FullyQualifiedName } from './model'
 
 const focusAreaCharLimit = 9_000
@@ -36,7 +36,8 @@ export class FocusAreaContextExtractor {
 
         // It means we don't really have a selection, but cursor position only
         if (!this.isCodeBlockSelected(editor)) {
-            importantRange = editor.visibleRanges[0]
+            // Select the whole line
+            importantRange = editor.document.lineAt(importantRange.start.line).range
         }
 
         const names = await this.findNamesInRange(editor.document.getText(), importantRange, editor.document.languageId)
@@ -56,7 +57,7 @@ export class FocusAreaContextExtractor {
             extendedCodeBlock: this.getRangeText(editor.document, extendedCodeBlockRange),
             codeBlock: codeBlock,
             selectionInsideExtendedCodeBlock: this.getSelectionInsideExtendedCodeBlock(
-                importantRange as Selection,
+                editor.selection,
                 extendedCodeBlockRange
             ),
             names:
@@ -234,13 +235,17 @@ export class FocusAreaContextExtractor {
             case 'javascript':
             case 'javascriptreact':
             case 'typescriptreact':
-                names = await Tsx.findNamesWithInExtent(fileText, extent)
+                // Disable Tsx.findNamesWithInExtent because promise Tsx.findNamesWithInExtent
+                // may not resolve and can cause chat to hang
+                //names = await Tsx.findNamesWithInExtent(fileText, extent)
+                names = undefined
                 break
             case 'python':
                 names = await Python.findNamesWithInExtent(fileText, extent)
                 break
             case 'typescript':
-                names = await TypeScript.findNamesWithInExtent(fileText, extent)
+                //names = await TypeScript.findNamesWithInExtent(fileText, extent)
+                names = undefined
                 break
         }
 

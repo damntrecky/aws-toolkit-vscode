@@ -9,7 +9,7 @@ import * as vscode from 'vscode'
 import { getLogger } from '../shared/logger'
 import { cast, Optional } from '../shared/utilities/typeConstructors'
 import { Auth } from './auth'
-import { once } from '../shared/utilities/functionUtils'
+import { once, onceChanged } from '../shared/utilities/functionUtils'
 import { isNonNullable } from '../shared/utilities/tsUtils'
 import { Connection, SsoConnection, StatefulConnection } from './connection'
 import { indent } from '../shared/utilities/textUtilities'
@@ -85,6 +85,7 @@ export const onDidChangeConnections = onDidChangeConnectionsEmitter.event
 export class SecondaryAuth<T extends Connection = Connection> {
     #activeConnection: Connection | undefined
     #savedConnection: T | undefined
+    protected static readonly logIfChanged = onceChanged((s: string) => getLogger().info(s))
 
     private readonly key = `${this.toolId}.savedConnectionId`
     readonly #onDidChangeActiveConnection = new vscode.EventEmitter<T | undefined>()
@@ -158,10 +159,11 @@ export class SecondaryAuth<T extends Connection = Connection> {
 
     public get isConnectionExpired() {
         if (this.activeConnection) {
-            getLogger().info(
+            SecondaryAuth.logIfChanged(
                 indent(
-                    `secondaryAuth connection id = ${this.activeConnection.id}
-            secondaryAuth connection status = ${this.auth.getConnectionState(this.activeConnection)}`,
+                    `secondaryAuth: connectionId=${
+                        this.activeConnection.id
+                    }, connectionStatus=${this.auth.getConnectionState(this.activeConnection)}`,
                     4,
                     true
                 )
@@ -216,30 +218,7 @@ export class SecondaryAuth<T extends Connection = Connection> {
     }
 
     public async addScopes(conn: T & SsoConnection, extraScopes: string[]) {
-        const oldScopes = conn.scopes ?? []
-        const newScopes = Array.from(new Set([...oldScopes, ...extraScopes]))
-
-        const updateConnectionScopes = (scopes: string[]) => {
-            return this.auth.updateConnection(conn, {
-                type: 'sso',
-                scopes,
-                startUrl: conn.startUrl,
-                ssoRegion: conn.ssoRegion,
-            })
-        }
-
-        const updatedConn = await updateConnectionScopes(newScopes)
-
-        try {
-            return await this.auth.reauthenticate(updatedConn)
-        } catch (e) {
-            // We updated the connection scopes pre-emptively, but if there is some issue (e.g. user cancels,
-            // InvalidGrantException, etc), then we need to revert to the old connection scopes. Otherwise,
-            // this could soft-lock users into a broken connection that cannot be re-authenticated without
-            // first deleting the connection.
-            await updateConnectionScopes(oldScopes)
-            throw e
-        }
+        return await addScopes(conn, extraScopes, this.auth)
     }
 
     // Used to lazily restore persisted connections.
@@ -273,5 +252,56 @@ export class SecondaryAuth<T extends Connection = Connection> {
             await this.auth.refreshConnectionState(conn)
             return conn
         }
+    }
+
+    // Used by Amazon Q to delete connection status & scope when this deletion is made by AWS Toolkit
+    // NO event should be emitted from this deletion to avoid infinite loop
+    public async onDeleteConnection(id: string) {
+        await this.auth.onDeleteConnection(id)
+        if (id === this.activeConnection?.id) {
+            await this.memento.update(this.key, undefined)
+            this.#savedConnection = undefined
+            this.#activeConnection = undefined
+        }
+    }
+}
+
+/**
+ * Used to add scopes to a connection, usually when re-using a connection across extensions.
+ * It does not invalidate or otherwise change the state of the connection, but it does
+ * trigger listeners for connection updates.
+ *
+ * How connections and scopes currently work for both this quickpick and the common Login page:
+ * - Don't request AWS scopes if we are signing into Amazon Q
+ * - Request AWS scopes for explorer sign in. Request AWS + CodeCatalyst scopes for CC sign in.
+ * - Request scope difference if re-using a connection. Cancelling or otherwise failing to get the new scopes does NOT invalidate the connection.
+ * - Adding scopes updates the connection profile, but does not change its state.
+ *
+ * Note: This should exist in connection.ts or utils.ts, but due to circular dependencies, it must go here.
+ */
+export async function addScopes(conn: SsoConnection, extraScopes: string[], auth = Auth.instance) {
+    const oldScopes = conn.scopes ?? []
+    const newScopes = Array.from(new Set([...oldScopes, ...extraScopes]))
+
+    const updateConnectionScopes = (scopes: string[]) => {
+        return auth.updateConnection(conn, {
+            type: 'sso',
+            scopes,
+            startUrl: conn.startUrl,
+            ssoRegion: conn.ssoRegion,
+        })
+    }
+
+    const updatedConn = await updateConnectionScopes(newScopes)
+
+    try {
+        return await auth.reauthenticate(updatedConn, false)
+    } catch (e) {
+        // We updated the connection scopes pre-emptively, but if there is some issue (e.g. user cancels,
+        // InvalidGrantException, etc), then we need to revert to the old connection scopes. Otherwise,
+        // this could soft-lock users into a broken connection that cannot be re-authenticated without
+        // first deleting the connection.
+        await updateConnectionScopes(oldScopes)
+        throw e
     }
 }

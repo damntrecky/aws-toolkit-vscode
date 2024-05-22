@@ -8,15 +8,26 @@ import * as assert from 'assert'
 import * as path from 'path'
 import sinon from 'sinon'
 import { waitUntil } from '../../../../shared/utilities/timeoutUtils'
-import { ControllerSetup, createController, createSession } from '../../utils'
-import { FollowUpTypes, createUri } from '../../../../amazonqFeatureDev/types'
+import { ControllerSetup, createController, createSession, generateVirtualMemoryUri } from '../../utils'
+import {
+    CurrentWsFolders,
+    FollowUpTypes,
+    createUri,
+    NewFileInfo,
+    DeletedFileInfo,
+} from '../../../../amazonqFeatureDev/types'
 import { Session } from '../../../../amazonqFeatureDev/session/session'
 import { Prompter } from '../../../../shared/ui/prompter'
 import { assertTelemetry, toFile } from '../../../testUtil'
 import { SelectedFolderNotInWorkspaceFolderError } from '../../../../amazonqFeatureDev/errors'
-import { PrepareRefinementState } from '../../../../amazonqFeatureDev/session/sessionState'
+import {
+    CodeGenState,
+    PrepareCodeGenState,
+    PrepareRefinementState,
+} from '../../../../amazonqFeatureDev/session/sessionState'
 import { FeatureDevClient } from '../../../../amazonqFeatureDev/client/featureDev'
 
+let mockGetCodeGeneration: sinon.SinonStub
 describe('Controller', () => {
     const tabID = '123'
     const conversationID = '456'
@@ -24,6 +35,40 @@ describe('Controller', () => {
 
     let session: Session
     let controllerSetup: ControllerSetup
+
+    const getFilePaths = (controllerSetup: ControllerSetup): NewFileInfo[] => [
+        {
+            zipFilePath: 'myfile1.js',
+            relativePath: 'myfile1.js',
+            fileContent: '',
+            rejected: false,
+            virtualMemoryUri: generateVirtualMemoryUri(uploadID, 'myfile1.js'),
+            workspaceFolder: controllerSetup.workspaceFolder,
+        },
+        {
+            zipFilePath: 'myfile2.js',
+            relativePath: 'myfile2.js',
+            fileContent: '',
+            rejected: true,
+            virtualMemoryUri: generateVirtualMemoryUri(uploadID, 'myfile2.js'),
+            workspaceFolder: controllerSetup.workspaceFolder,
+        },
+    ]
+
+    const getDeletedFiles = (): DeletedFileInfo[] => [
+        {
+            zipFilePath: 'myfile3.js',
+            relativePath: 'myfile3.js',
+            rejected: false,
+            workspaceFolder: controllerSetup.workspaceFolder,
+        },
+        {
+            zipFilePath: 'myfile4.js',
+            relativePath: 'myfile4.js',
+            rejected: true,
+            workspaceFolder: controllerSetup.workspaceFolder,
+        },
+    ]
 
     before(() => {
         sinon.stub(performance, 'now').returns(0)
@@ -41,7 +86,7 @@ describe('Controller', () => {
     describe('openDiff', async () => {
         async function openDiff(filePath: string, deleted = false) {
             const executeDiff = sinon.stub(vscode.commands, 'executeCommand').returns(Promise.resolve(undefined))
-            controllerSetup.emitters.openDiff.fire({ tabID, filePath, deleted })
+            controllerSetup.emitters.openDiff.fire({ tabID, conversationID, filePath, deleted })
 
             // Wait until the controller has time to process the event
             await waitUntil(() => {
@@ -105,7 +150,7 @@ describe('Controller', () => {
             const newFileLocation = path.join(controllerSetup.workspaceFolder.uri.fsPath, 'foo', 'fi', 'mynewfile.js')
             await toFile('', newFileLocation)
             sinon.stub(vscode.workspace, 'getWorkspaceFolder').returns(controllerSetup.workspaceFolder)
-            session.config.sourceRoots = [path.join(controllerSetup.workspaceFolder.uri.fsPath, 'foo', 'fi')]
+            session.config.workspaceRoots = [path.join(controllerSetup.workspaceFolder.uri.fsPath, 'foo', 'fi')]
             const executedDiff = await openDiff(path.join('foo', 'fi', 'mynewfile.js'))
             assert.strictEqual(
                 executedDiff.calledWith(
@@ -139,6 +184,7 @@ describe('Controller', () => {
         }
 
         it('fails if selected folder is not under a workspace folder', async () => {
+            sinon.stub(controllerSetup.sessionStorage, 'getSession').resolves(session)
             sinon.stub(vscode.workspace, 'getWorkspaceFolder').returns(undefined)
             const messengerSpy = sinon.spy(controllerSetup.messenger, 'sendAnswer')
             await modifyDefaultSourceFolder('../../')
@@ -166,8 +212,8 @@ describe('Controller', () => {
             sinon.stub(vscode.workspace, 'getWorkspaceFolder').returns(controllerSetup.workspaceFolder)
             const expectedSourceRoot = path.join(controllerSetup.workspaceFolder.uri.fsPath, 'src')
             const modifiedSession = await modifyDefaultSourceFolder(expectedSourceRoot)
-            assert.strictEqual(modifiedSession.config.sourceRoots.length, 1)
-            assert.strictEqual(modifiedSession.config.sourceRoots[0], expectedSourceRoot)
+            assert.strictEqual(modifiedSession.config.workspaceRoots.length, 1)
+            assert.strictEqual(modifiedSession.config.workspaceRoots[0], expectedSourceRoot)
         })
     })
 
@@ -177,7 +223,7 @@ describe('Controller', () => {
                 {
                     conversationId: conversationID,
                     proxyClient: new FeatureDevClient(),
-                    sourceRoots: [''],
+                    workspaceRoots: [''],
                     workspaceFolders: [controllerSetup.workspaceFolder],
                 },
                 '',
@@ -240,6 +286,138 @@ describe('Controller', () => {
             await newTaskClicked()
 
             assertTelemetry('amazonq_endChat', { amazonqConversationId: conversationID, result: 'Succeeded' })
+        })
+    })
+
+    describe('fileClicked', () => {
+        async function createCodeGenState() {
+            mockGetCodeGeneration = sinon.stub().resolves({ codeGenerationStatus: { status: 'Complete' } })
+
+            const workspaceFolders = [controllerSetup.workspaceFolder] as CurrentWsFolders
+            const testConfig = {
+                conversationId: conversationID,
+                proxyClient: {
+                    createConversation: () => sinon.stub(),
+                    createUploadUrl: () => sinon.stub(),
+                    generatePlan: () => sinon.stub(),
+                    startCodeGeneration: () => sinon.stub(),
+                    getCodeGeneration: () => mockGetCodeGeneration(),
+                    exportResultArchive: () => sinon.stub(),
+                } as unknown as FeatureDevClient,
+                workspaceRoots: [''],
+                uploadId: uploadID,
+                workspaceFolders,
+            }
+            const testApproach = 'test-approach'
+
+            const codeGenState = new CodeGenState(
+                testConfig,
+                testApproach,
+                getFilePaths(controllerSetup),
+                [],
+                [],
+                tabID,
+                0
+            )
+            const newSession = await createSession({
+                messenger: controllerSetup.messenger,
+                sessionState: codeGenState,
+                conversationID,
+                tabID,
+                uploadID,
+            })
+            return newSession
+        }
+
+        async function fileClicked(
+            getSessionStub: sinon.SinonStub<[tabID: string], Promise<Session>>,
+            action: string,
+            filePath: string
+        ) {
+            controllerSetup.emitters.fileClicked.fire({
+                tabID,
+                conversationID,
+                filePath,
+                action,
+            })
+
+            // Wait until the controller has time to process the event
+            await waitUntil(() => {
+                return Promise.resolve(getSessionStub.callCount > 0)
+            }, {})
+            return getSessionStub.getCall(0).returnValue
+        }
+
+        it('clicking the "Reject File" button updates the file state to "rejected: true"', async () => {
+            const filePath = getFilePaths(controllerSetup)[0].zipFilePath
+            const session = await createCodeGenState()
+            const getSessionStub = sinon.stub(controllerSetup.sessionStorage, 'getSession').resolves(session)
+
+            const rejectFile = await fileClicked(getSessionStub, 'reject-change', filePath)
+            assert.strictEqual(rejectFile.state.filePaths?.find(i => i.relativePath === filePath)?.rejected, true)
+        })
+
+        it('clicking the "Reject File" button and then "Revert Reject File", updates the file state to "rejected: false"', async () => {
+            const filePath = getFilePaths(controllerSetup)[0].zipFilePath
+            const session = await createCodeGenState()
+            const getSessionStub = sinon.stub(controllerSetup.sessionStorage, 'getSession').resolves(session)
+
+            await fileClicked(getSessionStub, 'reject-change', filePath)
+            const revertRejection = await fileClicked(getSessionStub, 'revert-rejection', filePath)
+            assert.strictEqual(revertRejection.state.filePaths?.find(i => i.relativePath === filePath)?.rejected, false)
+        })
+    })
+
+    describe('insertCode', () => {
+        it('sets the number of files accepted counting also deleted files', async () => {
+            async function insertCode() {
+                const initialState = new PrepareCodeGenState(
+                    {
+                        conversationId: conversationID,
+                        proxyClient: new FeatureDevClient(),
+                        workspaceRoots: [''],
+                        workspaceFolders: [controllerSetup.workspaceFolder],
+                        uploadId: uploadID,
+                    },
+                    '',
+                    getFilePaths(controllerSetup),
+                    getDeletedFiles(),
+                    [],
+                    tabID,
+                    0
+                )
+
+                const newSession = await createSession({
+                    messenger: controllerSetup.messenger,
+                    sessionState: initialState,
+                    conversationID,
+                    tabID,
+                    uploadID,
+                })
+                const getSessionStub = sinon.stub(controllerSetup.sessionStorage, 'getSession').resolves(newSession)
+
+                controllerSetup.emitters.followUpClicked.fire({
+                    tabID,
+                    conversationID,
+                    followUp: {
+                        type: FollowUpTypes.InsertCode,
+                    },
+                })
+
+                // Wait until the controller has time to process the event
+                await waitUntil(() => {
+                    return Promise.resolve(getSessionStub.callCount > 0)
+                }, {})
+            }
+
+            await insertCode()
+
+            assertTelemetry('amazonq_isAcceptedCodeChanges', {
+                amazonqConversationId: conversationID,
+                amazonqNumberOfFilesAccepted: 2,
+                enabled: true,
+                result: 'Succeeded',
+            })
         })
     })
 })
